@@ -108,6 +108,31 @@ python3 -m venv .venv && .venv/bin/pip install tokenizers
 .venv/bin/python tools/gen_fixtures.py
 ```
 
+### Real-corpus verification
+
+Hand-written cases only cover edge cases someone thought to look for. A second
+test runs the same comparison over real vault text:
+
+```bash
+git clone --depth 1 https://github.com/dusklinux/dusky ../Documents
+.venv/bin/python tools/gen_corpus_fixtures.py
+./gradlew testDebugUnitTest
+```
+
+That samples 1500 paragraph-level segments and compares every token id. It
+currently passes on all 1500 (~53k tokens) from a 392-note Obsidian vault
+containing wikilinks, callouts, frontmatter, tables, code fences, and CJK.
+
+The `[UNK]` rate there is **0.057%**, and inspecting them shows they're
+box-drawing characters from ASCII diagrams (`├──`, `┌───▼───┐`) plus a few
+emoji — glyphs with no semantic content to lose. That's the number to re-check
+if the model or vocab ever changes.
+
+The vault itself is gitignored: it's MIT-licensed third-party content used as a
+fixture, and vendoring it would mean carrying its license and copyright notice
+into this repo's Phase 4 license manifest for no benefit. The derived
+`corpus_fixtures.json` is gitignored for the same reason.
+
 The differential test earned its keep immediately — it caught two real bugs
 that no amount of eyeballing would have found:
 

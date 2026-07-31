@@ -77,6 +77,62 @@ class WordPieceTokenizerTest {
         )
     }
 
+    /**
+     * The same comparison against real vault text rather than cases we invented.
+     *
+     * Hand-written fixtures only cover edge cases someone thought to look for;
+     * real notes contain constructs nobody would think to write a test for.
+     * Fixtures are gitignored (derived from third-party content and
+     * regenerable), so this skips when they're absent — see
+     * tools/gen_corpus_fixtures.py.
+     */
+    @Test
+    fun matchesReferenceOnRealVaultCorpus() {
+        val stream = javaClass.getResourceAsStream("/corpus_fixtures.json")
+        assumeTrue(
+            "corpus_fixtures.json absent — run tools/gen_corpus_fixtures.py against a vault",
+            stream != null,
+        )
+        val corpus = JSONArray(stream!!.bufferedReader().readText())
+
+        var mismatches = 0
+        val examples = mutableListOf<String>()
+
+        for (i in 0 until corpus.length()) {
+            val case = corpus.getJSONObject(i)
+            val text = case.getString("text")
+            val expected = case.getJSONArray("ids").let { arr ->
+                LongArray(arr.length()) { arr.getLong(it) }
+            }
+
+            // Generous maxLen so truncation never masks a real divergence.
+            val encoded = tokenizer.encode(text, maxLen = expected.size + 8)
+            val actual = encoded.inputIds
+                .zip(encoded.attentionMask.toTypedArray())
+                .filter { it.second == 1L }
+                .map { it.first }
+                .toLongArray()
+
+            if (!expected.contentEquals(actual)) {
+                mismatches++
+                if (examples.size < 5) {
+                    val at = expected.zip(actual.toTypedArray())
+                        .indexOfFirst { it.first != it.second }
+                    examples += "  case $i diverges at token $at\n" +
+                        "    text: ${text.take(120).replace("\n", "\\n")}\n" +
+                        "    expected: ${expected.drop(maxOf(0, at - 2)).take(6)}\n" +
+                        "    actual:   ${actual.drop(maxOf(0, at - 2)).take(6)}"
+                }
+            }
+        }
+
+        assertTrue(
+            "Diverged on $mismatches/${corpus.length()} real vault segments:\n" +
+                examples.joinToString("\n"),
+            mismatches == 0,
+        )
+    }
+
     @Test
     fun padsAndMasksConsistently() {
         val enc = tokenizer.encode("hello world", maxLen = 16)

@@ -4,6 +4,18 @@
 # Prerequisites section instead.
 models/
 
+# Test vault — third-party content used as a fixture, not project content.
+# The dusklinux/dusky vault is MIT, so vendoring it would be legal but would
+# require carrying its license and copyright notice, which needlessly
+# complicates the Phase 4 license manifest. Clone it instead:
+#   git clone --depth 1 https://github.com/dusklinux/dusky Documents
+Documents/
+
+# Fixtures derived from the test vault — regenerable, and third-party derived
+# for the same reason the vault itself isn't committed.
+spike/app/src/test/resources/corpus_fixtures.json
+
+
 # Android / Gradle
 *.apk
 *.aab
