@@ -1,0 +1,23 @@
+# Model weights — downloaded, never committed.
+# Large binaries, and bundling weights in-repo muddies the license story
+# (see the Non-Free Assets note in the roadmap). Fetch them per the
+# Prerequisites section instead.
+models/
+
+# Android / Gradle
+*.apk
+*.aab
+.gradle/
+build/
+local.properties
+captures/
+.cxx/
+
+# Rust
+target/
+**/*.rs.bk
+
+# IDE
+.idea/
+*.iml
+.DS_Store
