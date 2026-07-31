@@ -102,7 +102,7 @@ Everything below can be set up before any "real" app code exists — it's what P
 **Android Studio / SDK Manager (Settings → Languages & Frameworks → Android SDK):**
 - Latest stable Android Studio channel (not Canary/Beta) — native library debugging and Compose previews are more reliable there.
 - SDK Platform: latest stable API level, for `compileSdk`/`targetSdk`. Pick a `minSdk` deliberately rather than defaulting to Studio's suggestion — SAF is fine as far back as API 21, but AndroidX Biometric's `BiometricPrompt` wants API 23+; API 26 (Android 8) is a reasonable floor that keeps the biometric-unlock story simple without dropping much real-world reach.
-- SDK Tools tab: install **NDK (Side by side)** and **CMake**. Needed either way for Phase 2+ — llama.cpp JNI (Track A) and a Rust core via `cargo-ndk` (Track B) both compile native code through the NDK.
+- SDK Tools tab: install **NDK (Side by side)** and **CMake**. Needed either way for Phase 2+ — llama.cpp JNI (Track A) and a Rust core via `cargo-ndk` (Track B) both compile native code through the NDK. Tick **Show Package Details** to choose a version; take the **LTS release (r27d, `27.3.13750724`)** rather than whatever's newest. Beta NDKs are the default trap here — Phase 4 wants reproducible builds, and pinning to a pre-release toolchain that may be withdrawn or change codegen undermines that, on top of making native inference bugs harder to attribute.
 - A device or emulator image running your chosen `minSdk` or higher, for basic UI iteration.
 
 **A real physical Android device.** The roadmap's Phase 0 exit criteria explicitly call for measuring embedding latency and RAM "on your own phone, not a spec sheet" — emulators don't give you honest numbers for on-device inference. Enable Developer Options → USB debugging and confirm `adb devices` sees it from a terminal (Android Studio's Device Manager can also run it directly).
@@ -112,9 +112,9 @@ Everything below can be set up before any "real" app code exists — it's what P
 - Install `cargo-ndk`: `cargo install cargo-ndk`
 - Point `cargo-ndk` at the NDK via the `ANDROID_NDK_HOME` env var. It auto-detects the newest NDK under Android Studio's default location, but pinning the version explicitly avoids surprise toolchain changes when a new NDK is installed. Set it persistently in your shell rc — for fish, in `~/.config/fish/config.fish`:
   ```fish
-  export ANDROID_NDK_HOME="$HOME/Android/Sdk/ndk/30.0.15729638"
+  export ANDROID_NDK_HOME="$HOME/Android/Sdk/ndk/27.3.13750724"
   ```
-  Bump that version string whenever you install a newer NDK. Verify with `echo $ANDROID_NDK_HOME` in a fresh shell.
+  NDK installs live side by side, so switching toolchains is just this one line. Verify with `echo $ANDROID_NDK_HOME` in a fresh shell, and sanity-check the whole chain by cross-compiling a throwaway `crate-type = ["cdylib"]` crate — `cargo ndk -t arm64-v8a -t armeabi-v7a build --release`, then `file` the resulting `.so` and confirm it reports `ARM aarch64` / `ARM EABI5` and the NDK version you expect. Worth doing before writing real Rust, so a broken toolchain never gets mistaken for broken code.
 - **No standalone `uniffi-bindgen` install** — current UniFFI (0.28+) dropped the globally-installable CLI. Kotlin binding generation is wired up per-project once the Rust crate exists: add a `[[bin]] name = "uniffi-bindgen"` target pointing at a small `uniffi-bindgen.rs` containing `fn main() { uniffi::uniffi_bindgen_main() }`, depend on `uniffi` with the `cli` feature, and run it with `cargo run --features=uniffi/cli --bin uniffi-bindgen -- generate --library <path-to-.so> --language kotlin --out-dir <dir>`. There's nothing to set up for this until Phase 2 scaffolding creates the crate.
 
 If instead you're leaning toward Track A (llama.cpp via JNI), no extra toolchain beyond NDK/CMake is needed until Phase 2 — you'd pull llama.cpp as a submodule or prebuilt `.so` at that point, not now.
