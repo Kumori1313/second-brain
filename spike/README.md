@@ -1,0 +1,98 @@
+# Loam — Phase 0 Spike
+
+Throwaway harness to prove the three things Phase 0 needs to answer **on real
+hardware**, before any real app code exists:
+
+1. **Embedding works on-device** — cold-start and per-call latency, output
+   dimensions, and a sanity check that the vectors actually behave.
+2. **SAF folder read works** — walk a real vault, read `.md` in place, with no
+   storage permission in the manifest.
+3. **Brute-force cosine search has headroom** — measured at 5k / 20k / 50k
+   chunks, which decides whether `sqlite-vec` is ever needed.
+
+This is not the shape of the real app. It exists to be measured and deleted.
+
+## Zero network permission
+
+`AndroidManifest.xml` declares **no `<uses-permission>` entries at all**. Verify
+against the built APK rather than trusting the source:
+
+```bash
+~/Android/Sdk/build-tools/36.0.0/aapt2 dump permissions \
+  app/build/outputs/apk/debug/app-debug.apk
+```
+
+The only entry should be `dev.loam.spike.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION`
+— a self-scoped signature permission AndroidX injects for local broadcast
+receivers. It grants nothing outward and is not network access.
+
+## Building
+
+Android Studio is installed as a **Flatpak** on this machine, so its bundled JDK
+isn't on `$PATH` and there is no host JDK. Point Gradle at the Flatpak's JBR:
+
+```bash
+export JAVA_HOME=/var/lib/flatpak/app/com.google.AndroidStudio/current/active/files/extra/jbr
+export ANDROID_HOME=$HOME/Android/Sdk
+./gradlew assembleDebug
+```
+
+Use the `current/active` path shown above, not the hashed
+`x86_64/stable/<sha>/` one — the hash changes every time Studio updates.
+
+Alternatively `sudo pacman -S jdk21-openjdk` for a host JDK and skip the
+`JAVA_HOME` export. Building inside Android Studio itself needs none of this.
+
+### Version notes
+
+AGP 9 has **built-in Kotlin support**: applying `org.jetbrains.kotlin.android`
+is now a hard error, not merely redundant. The Compose compiler plugin
+(`org.jetbrains.kotlin.plugin.compose`) is still required separately.
+
+The build filters to `arm64-v8a` only. ONNX Runtime ships four ABIs totalling
+~113MB of native code; unfiltered, the debug APK is 125MB instead of 39MB. Add
+`x86_64` to `abiFilters` in `app/build.gradle.kts` to run on an emulator.
+
+## Running
+
+Install, then sideload the model — it is pushed rather than bundled, to keep a
+22MB blob out of git and out of the APK:
+
+```bash
+./gradlew installDebug
+./push-model.sh
+```
+
+`push-model.sh` copies `model_qint8_arm64.onnx` and `vocab.txt` from
+`../models/all-MiniLM-L6-v2/` into the app's external files dir. Fetch those
+first per the roadmap's model prerequisites if `../models/` is empty.
+
+Then launch **Loam Spike** and work through the three buttons in order.
+
+## Reading the results
+
+**Embedding test** prints cold-start and per-call latency, then a similarity
+check: two sentences about distributed systems versus one about banana bread.
+Related must score higher than unrelated. If it doesn't, the tokenizer or the
+mean pooling is wrong — the model will still run and still return
+confident-looking vectors, which is exactly what makes this failure mode worth
+an explicit check.
+
+To compare quantization, push `model.onnx` (fp32, 87MB) as well and change
+`MODEL_NAME` in `MainActivity.kt`. The interesting number is not just latency
+but whether INT8 changes the similarity ordering on your own notes.
+
+**Cosine benchmark** reports ms/query and heap at each vault size. If 50k chunks
+stays comfortably interactive, brute force is sufficient and `sqlite-vec` stays
+off the dependency list — which is the outcome the roadmap is hoping for.
+
+## Known gaps
+
+- The WordPiece tokenizer is hand-rolled and **unverified against a reference
+  implementation**. Before trusting any retrieval-quality conclusions, check its
+  output for a few strings against Python `transformers`. A subtly wrong
+  tokenizer degrades results silently rather than failing.
+- Benchmark vectors are uniform random, so they are further apart than real
+  note embeddings. Timing is representative; recall quality is not.
+- No unit tests. Deliberate for a spike — but the tokenizer is the one piece
+  that carries into Phase 1, so it deserves tests when it graduates.

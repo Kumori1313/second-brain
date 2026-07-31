@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!--
+      No <uses-permission> entries at all — deliberately.
+
+      Core principle #1 says search must work with zero network permission.
+      This spike proves that end to end: the model is sideloaded via adb, the
+      vault is read through SAF (which grants per-tree access without a storage
+      permission), and inference is local. If anything here ever stops working
+      without adding a permission, that's the principle failing, not the app.
+    -->
+
+    <application
+        android:allowBackup="false"
+        android:label="Loam Spike"
+        android:supportsRtl="true"
+        android:theme="@style/Theme.LoamSpike">
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:label="Loam Spike">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+    </application>
+
+</manifest>
