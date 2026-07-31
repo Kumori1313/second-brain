@@ -1,0 +1,182 @@
+# Loam — Architecture & Development Roadmap
+
+*A FOSS, Android-native semantic search and Q&A layer over notes you already own. Codename only — swap it for anything you like (worth a quick trademark/package-name gut-check before you commit to it).*
+
+## Contents
+- [What this is (and isn't)](#what-this-is-and-isnt)
+- [Core principles](#core-principles)
+- [High-level architecture](#high-level-architecture)
+- [Key architecture decisions](#key-architecture-decisions)
+- [Data flow](#data-flow)
+- [Tech stack](#tech-stack)
+- [Prerequisites](#prerequisites)
+- [Development roadmap](#development-roadmap)
+- [Risks & open questions](#risks--open-questions)
+- [Prior art & references](#prior-art--references)
+
+## What this is (and isn't)
+
+Loam indexes an existing folder of Markdown notes — an Obsidian vault, a Markor folder, whatever you already use — and lets you search it by meaning instead of keyword, and optionally ask it questions that get answered using your own notes as grounding (RAG). Everything runs on-device.
+
+It is **not** another note editor. It doesn't own your files, doesn't invent a proprietary format, and doesn't compete with the editor you already like. That's a deliberate scope cut: the semantic-search-and-Q&A layer is the actual gap in the FOSS Android ecosystem right now; a "good enough" markdown editor is not.
+
+## Core principles
+
+These double as acceptance criteria — if a build violates one of these, something's gone wrong:
+
+1. **Core functionality needs zero network permission.** Search, and Q&A once a model is on-device, work in airplane mode, forever. The only legitimate network use is a one-time, explicit, user-initiated model download.
+2. **No proprietary storage format.** Notes stay as plain `.md` files, wherever you already keep them.
+3. **No Google dependencies.** No Play Services, no Firebase, no GMS-only APIs. Assume the target device may not have Play Services installed at all.
+4. **Auditable, not a black box.** Every answer shows which notes it came from. No silent telemetry, ever.
+5. **F-Droid-distributable.** Every dependency needs a real OSI-approved license — this rules out some otherwise-tempting libraries (see below).
+
+## High-level architecture
+
+```
+UI (Jetpack Compose)
+  Search · Ask (RAG chat, Phase 2+) · Settings · Reindex status
+        │
+        ▼
+Domain layer (use cases)
+  SearchNotes · AskQuestion · IndexVault · ManageVaultLocation
+        │
+        ├──▶ Vault Reader          SAF folder access, file diffing (mtime/hash), chunking
+        │
+        ├──▶ Embedding Engine      EmbeddingGemma or MiniLM-L6-v2 — on-device, no network
+        │
+        └──▶ Local LLM (Phase 2+)  llama.cpp JNI, or a Rust/candle core — GGUF models
+                    │
+                    ▼
+        Local store — Room + SQLCipher
+        chunks · embedding vectors · index metadata (mtimes / hashes)
+        search: brute-force cosine similarity → sqlite-vec if a vault gets huge
+```
+
+## Key architecture decisions
+
+| Decision | Choice | Why | Alternatives considered |
+|---|---|---|---|
+| Note storage | Read `.md` files in place via Storage Access Framework | Interop with whatever you already use; a fraction of the work of a real editor | Own editor + DB — reinvents Obsidian/Markor for no real gain |
+| Vector search | Brute-force cosine similarity for MVP; add **sqlite-vec** (MIT/Apache-2.0, confirmed to run on Android via precompiled loadable extensions) only if a vault outgrows it | Personal note collections are realistically low thousands of chunks — brute force is fast enough and has zero exotic dependencies | **ObjectBox** — genuinely excellent API and the first real on-device vector DB for Android, but its native engine ships under the proprietary "ObjectBox Binary License," not an OSI-approved one. F-Droid maintainers have explicitly flagged apps using it as unusable for F-Droid. Ruling it out now avoids a rewrite later. |
+| Embedding model | **EmbeddingGemma** (308M params, small enough to run in well under 200MB of RAM when quantized, purpose-built for on-device RAG) as default; **MiniLM-L6-v2** (Apache-2.0, ~80MB) as an alternate build flavor | EmbeddingGemma is currently the strongest open embedding model under 500M params; MiniLM is smaller and fully, unambiguously OSI-licensed | Cloud embedding APIs — ruled out immediately, breaks principle #1 |
+| Local LLM runtime (Phase 2+) | **Track A:** llama.cpp via JNI, running GGUF models (Gemma 3, Qwen, Llama 3.2, Phi-4 Mini). **Track B:** a Rust core (candle or llama-cpp-2 bindings) exposed via UniFFI | Track A is the well-trodden path other FOSS on-device apps use. Track B reuses the Cubiomes-FFI pattern from the Minecraft seed-map project, and leaves you with a portable engine you could reuse in a future desktop build | Google AI Edge / LiteRT LLM Inference API — solid, Apache-2.0, and genuinely standalone (no Play Services needed at runtime), but it's still Google's SDK — worth weighing against the point of the project |
+| Encryption at rest | SQLCipher (public-domain SQLite core, Apache-2.0 Android bindings) + AndroidX Biometric for unlock | Notes are personal by definition; encrypt the derived index too, don't just assume the OS handles it | Unencrypted Room DB — simpler, but no at-rest protection if the device is lost or compromised |
+| Distribution | F-Droid, mirrored on GitHub Releases (Obtainium-friendly) | Matches the toolchain you already use | Play Store — would add a Google dependency purely for distribution |
+
+A note on the embedding-model choice and F-Droid: EmbeddingGemma ships under Google's Gemma license, which is permissive but not OSI-approved. Bundled that way, F-Droid would likely tag the app with the **Non-Free Assets** anti-feature (their term for non-libre non-code assets, which covers bundled model weights) — not a rejection, just an honest label. Shipping the MiniLM-L6-v2 flavor as an alternate build avoids the tag entirely, at some cost to embedding quality. Worth deciding on purpose rather than by accident.
+
+## Data flow
+
+**Indexing**
+1. Grant access to a folder via `ACTION_OPEN_DOCUMENT_TREE` (the existing vault).
+2. Walk the tree, chunk each note (by heading/paragraph, roughly 200–400 tokens, slight overlap).
+3. Embed each chunk on-device; store chunk text, embedding, source path, heading breadcrumb, and an mtime/hash fingerprint in the encrypted local store.
+4. A WorkManager job re-checks fingerprints periodically (SAF doesn't support real filesystem-watch across app restarts, so this — plus a manual "reindex now" — is the honest way to do it, not a bug to fix later).
+
+**Search**
+1. Embed the query with the same model used for indexing.
+2. Rank stored chunk vectors by cosine similarity.
+3. Show top-K results with source file, heading, and snippet; tapping one opens the real file in whatever app is associated with `.md` files.
+
+**Ask (RAG Q&A, Phase 2+)**
+1. Embed the question, retrieve top-K chunks.
+2. Build a prompt: retrieved chunks + question.
+3. Local LLM generates an answer.
+4. Show the answer with an expandable "sources used" panel listing the exact chunks it was grounded in — the whole point is that this is checkable, not a black box.
+
+## Tech stack
+
+- **UI:** Kotlin + Jetpack Compose (Material 3)
+- **Storage:** Room over SQLCipher
+- **Background work:** WorkManager (indexing), AndroidX Biometric (lock)
+- **File access:** Storage Access Framework
+- **Embedding runtime:** ONNX Runtime Mobile (zero Google code) or Google AI Edge / LiteRT (Google-authored but standalone, no Play Services required, well-optimized for Gemma models) — pick based on how strict you want the "no Google code in the dependency tree" line to be, versus just "no Google services"
+- **LLM runtime (Phase 2+):** llama.cpp (JNI) or a Rust core via `cargo-ndk` + UniFFI
+
+If you take the Rust track, one Android-specific gotcha either way: Google ships **two** distribution modes for the TFLite/LiteRT runtime — bundled-in-APK (works on any device, larger APK) and Play-Services-delivered (smaller APK, requires GMS). For a GrapheneOS-friendly app, bundled is the only mode that makes sense, and it's an easy thing to get wrong by following a generic tutorial aimed at mainstream devices.
+
+## Prerequisites
+
+Everything below can be set up before any "real" app code exists — it's what Phase 0 actually needs to start. Android Studio itself is assumed already installed.
+
+**Android Studio / SDK Manager (Settings → Languages & Frameworks → Android SDK):**
+- Latest stable Android Studio channel (not Canary/Beta) — native library debugging and Compose previews are more reliable there.
+- SDK Platform: latest stable API level, for `compileSdk`/`targetSdk`. Pick a `minSdk` deliberately rather than defaulting to Studio's suggestion — SAF is fine as far back as API 21, but AndroidX Biometric's `BiometricPrompt` wants API 23+; API 26 (Android 8) is a reasonable floor that keeps the biometric-unlock story simple without dropping much real-world reach.
+- SDK Tools tab: install **NDK (Side by side)** and **CMake**. Needed either way for Phase 2+ — llama.cpp JNI (Track A) and a Rust core via `cargo-ndk` (Track B) both compile native code through the NDK.
+- A device or emulator image running your chosen `minSdk` or higher, for basic UI iteration.
+
+**A real physical Android device.** The roadmap's Phase 0 exit criteria explicitly call for measuring embedding latency and RAM "on your own phone, not a spec sheet" — emulators don't give you honest numbers for on-device inference. Enable Developer Options → USB debugging and confirm `adb devices` sees it from a terminal (Android Studio's Device Manager can also run it directly).
+
+**If you're leaning toward Track B (Rust core) for the LLM runtime**, set this up now even though it's a Phase 2+ concern, since it's independent of app code:
+- Install `rustup` (https://rustup.rs), then add the Android targets: `rustup target add aarch64-linux-android armv7-linux-androideabi x86_64-linux-android i686-linux-android`
+- Install `cargo-ndk`: `cargo install cargo-ndk`
+- Point `cargo-ndk` at the NDK via the `ANDROID_NDK_HOME` env var. It auto-detects the newest NDK under Android Studio's default location, but pinning the version explicitly avoids surprise toolchain changes when a new NDK is installed. Set it persistently in your shell rc — for fish, in `~/.config/fish/config.fish`:
+  ```fish
+  export ANDROID_NDK_HOME="$HOME/Android/Sdk/ndk/30.0.15729638"
+  ```
+  Bump that version string whenever you install a newer NDK. Verify with `echo $ANDROID_NDK_HOME` in a fresh shell.
+- **No standalone `uniffi-bindgen` install** — current UniFFI (0.28+) dropped the globally-installable CLI. Kotlin binding generation is wired up per-project once the Rust crate exists: add a `[[bin]] name = "uniffi-bindgen"` target pointing at a small `uniffi-bindgen.rs` containing `fn main() { uniffi::uniffi_bindgen_main() }`, depend on `uniffi` with the `cli` feature, and run it with `cargo run --features=uniffi/cli --bin uniffi-bindgen -- generate --library <path-to-.so> --language kotlin --out-dir <dir>`. There's nothing to set up for this until Phase 2 scaffolding creates the crate.
+
+If instead you're leaning toward Track A (llama.cpp via JNI), no extra toolchain beyond NDK/CMake is needed until Phase 2 — you'd pull llama.cpp as a submodule or prebuilt `.so` at that point, not now.
+
+**Model files for the Phase 0 spike:**
+- Download an ONNX or LiteRT export of MiniLM-L6-v2 (Apache-2.0, ~80MB) or EmbeddingGemma, to sideload into a throwaway test app. This one-time download is the single legitimate use of network access called out in Core principle #1 — do it manually now rather than wiring up in-app download code you don't need yet.
+- Not needed yet, but worth knowing ahead of Phase 2: a small quantized GGUF model (e.g. a Q4 build of Gemma 3 or Phi-4 Mini) for the eventual local-LLM spike.
+
+**A test vault.** A folder of real (or realistic) `.md` notes, on-device or on the emulator's storage, to grant via `ACTION_OPEN_DOCUMENT_TREE` when testing SAF folder-picking and file-reading — using your actual notes, per the Phase 1 exit criteria, is more informative than synthetic fixtures once you get that far.
+
+## Development roadmap
+
+Sizing below is relative, not a schedule — solo FOSS projects move in bursts. The real long pole is almost always Phase 0 and Phase 2 (getting inference running well on real hardware), not the UI.
+
+### Phase 0 — Spike (de-risk before committing)
+- Get an embedding model running via ONNX Runtime or LiteRT in a throwaway test app; measure real latency and RAM on your own phone, not a spec sheet.
+- Get SAF folder-picking and file-reading working end to end.
+- Benchmark brute-force cosine similarity against synthetic 5k/20k/50k-chunk sets, on-device, to know your real ceiling before deciding whether sqlite-vec is ever needed.
+- **Exit criteria:** a working embedding call and a working SAF read, both proven on your own hardware, before any "real" app code exists.
+
+### Phase 1 — MVP: index + semantic search (no LLM yet)
+- Compose UI: pick vault, search, results list.
+- Chunking + embedding pipeline; Room/SQLCipher schema; WorkManager indexing job.
+- Brute-force cosine similarity search; manual + periodic reindex.
+- **Exit criteria:** point it at your real notes, ask "did I ever write about X," get correct, meaning-based hits — with zero network permission anywhere in the manifest.
+
+### Phase 2 — RAG Q&A
+- Integrate the chosen LLM runtime; GGUF model loading; a model download/picker flow (this is where INTERNET permission enters, scoped narrowly to "fetch model").
+- Build retrieve-then-generate; the "sources used" panel.
+- Handle low-confidence retrieval honestly — surface "no good matches" rather than forcing a hallucinated answer.
+- **Exit criteria:** a real question about your notes gets a grounded, sourced answer, fully offline once the model is downloaded.
+
+### Phase 3 — Polish & real-world hardening
+- Paginated/streamed indexing so a large vault doesn't freeze the UI on first run.
+- Settings: model choice, quantization level, chunk size, folder exclude-patterns.
+- Share-sheet integration; consider a home-screen search widget.
+- Battery/thermal testing under a full-vault first index — this is the real stress test.
+- **Exit criteria:** daily-driver comfortable — you reach for it instead of manual grep.
+
+### Phase 4 — F-Droid packaging & release
+- Reproducible build setup; a full license manifest (SQLCipher, sqlite-vec if used, llama.cpp, embedding model weights, each with correct SPDX identifiers).
+- Anti-feature self-assessment (see the Non-Free Assets note above); settle the EmbeddingGemma-vs-MiniLM question deliberately here if you haven't already.
+- Submit to fdroiddata; iterate through review.
+- **Exit criteria:** installable from F-Droid, or at minimum your own repo via Obtainium, with an honestly-labeled anti-feature list.
+
+### Phase 5 — Later, optional
+- Multi-vault support (e.g., separate encrypted stores for work vs. personal notes).
+- A live "related notes while you write" sidebar, Smart-Connections-style, if you ever build or hook into an editor.
+- A desktop companion sharing the same Rust core (if you took Track B) — this is the payoff for going Rust-first: the same embedding/retrieval engine running on your Fedora box, not just your phone.
+
+## Risks & open questions
+
+- **Small-model hallucination survives RAG.** Grounding reduces it, doesn't eliminate it — the "sources used" panel is doing real work here, not decoration.
+- **SAF has no true background filesystem watch.** Periodic + manual reindex is the honest architecture, not a stopgap.
+- **First index of a large, long-lived vault will be slow and battery-heavy.** Needs a visible progress state; shouldn't run silently in the background on first launch.
+- **Model licensing shapes your F-Droid listing.** Decide the EmbeddingGemma/MiniLM (and any LLM model) question with the anti-feature consequences in mind, not after the fact.
+
+## Prior art & references
+
+- [Reor](https://github.com/reorproject/reor) — the closest thing to this that exists, but desktop-only
+- [Smart Connections](https://smartconnections.app/smart-connections/) — same idea, as an Obsidian plugin
+- [sqlite-vec](https://github.com/asg017/sqlite-vec) · [Android/iOS notes](https://alexgarcia.xyz/sqlite-vec/android-ios.html)
+- [ObjectBox F-Droid incompatibility thread](https://github.com/objectbox/objectbox-java/issues/1100) — why it's ruled out above
+- [EmbeddingGemma model card](https://ai.google.dev/gemma/docs/embeddinggemma) · [announcement](https://developers.googleblog.com/en/introducing-embeddinggemma/)
+- [Google AI Edge function calling for Android](https://ai.google.dev/edge/mediapipe/solutions/genai/function_calling/android) — relevant if you extend past pure Q&A later
