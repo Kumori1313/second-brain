@@ -63,4 +63,7 @@ dependencies {
     implementation(libs.androidx.material3)
     implementation(libs.androidx.documentfile)
     implementation(libs.onnxruntime.android)
+
+    testImplementation(libs.junit)
+    testImplementation(libs.org.json)
 }
