@@ -154,7 +154,12 @@ fun SpikeScreen(filesRoot: File?) {
                     for (n in listOf(5_000, 20_000, 50_000)) {
                         val store = CosineBench.synthesize(n, dim)
                         val r = CosineBench.run(store, dim)
-                        logLine("  %,d chunks: %.2f ms/query (heap %d MB)".format(r.chunkCount, r.millisPerQuery, r.heapUsedMb))
+                        logLine(
+                            "  %,d: %.2f ms avg, %.2f best (n=%d, heap %d MB)".format(
+                                r.chunkCount, r.millisPerQuery, r.bestMillis,
+                                r.iterations, r.heapUsedMb,
+                            )
+                        )
                     }
                     logLine("  if 50k stays under ~50ms, sqlite-vec is not needed")
                 }

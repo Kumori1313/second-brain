@@ -31,6 +31,12 @@ android {
     buildTypes {
         release {
             isMinifyEnabled = false
+            // Spike-only: sign release with the debug key so the benchmark can
+            // be installed without a keystore. A debuggable build is not a
+            // valid place to measure — `debuggable true` forces deoptimization
+            // support and blocks ART inlining, so the hot dot-product loop
+            // never reaches steady-state codegen. Never ship this config.
+            signingConfig = signingConfigs.getByName("debug")
         }
     }
 

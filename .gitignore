@@ -25,6 +25,10 @@ local.properties
 captures/
 .cxx/
 
+# Python venv for the fixture/verification tools. `python -m venv` writes a
+# self-ignoring .gitignore inside, but don't rely on that.
+.venv/
+
 # Rust
 target/
 **/*.rs.bk

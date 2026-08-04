@@ -20,6 +20,8 @@ object CosineBench {
         val chunkCount: Int,
         val dimensions: Int,
         val millisPerQuery: Double,
+        val bestMillis: Double,
+        val iterations: Int,
         val heapUsedMb: Long,
     )
 
@@ -41,21 +43,54 @@ object CosineBench {
         return store
     }
 
-    fun run(store: FloatArray, dim: Int, topK: Int = 10, queries: Int = 20): Result {
+    /**
+     * Warmup and measurement are both wall-clock bounded rather than fixed
+     * iteration counts.
+     *
+     * This matters more than it looks. ART decides to JIT-compile on invocation
+     * count and on-stack replacement, and a single untimed pass triggers
+     * neither — the timed run then measures the interpreter, which is ~50x
+     * slower than steady state. That produced a first set of numbers (75ms at
+     * 5k, 544ms at 50k) that would have argued for adopting sqlite-vec on the
+     * strength of a measurement artifact. The giveaway was cost *per chunk*
+     * falling as the store grew, which only happens when a fixed startup cost
+     * is being amortized.
+     *
+     * Best-of is reported alongside the mean because a phone is a noisy
+     * environment: other apps, big.LITTLE core migration, and thermal
+     * management all inflate the mean. The best sample is the closest thing to
+     * the hardware's actual capability.
+     */
+    fun run(
+        store: FloatArray,
+        dim: Int,
+        topK: Int = 10,
+        warmupMs: Long = 1_000,
+        measureMs: Long = 1_000,
+    ): Result {
         val count = store.size / dim
         val query = synthesize(1, dim, seed = 7)
 
-        // One untimed pass so JIT warmup doesn't get charged to the first result.
-        topK(store, query, dim, count, topK)
+        val warmEnd = System.nanoTime() + warmupMs * 1_000_000
+        while (System.nanoTime() < warmEnd) topK(store, query, dim, count, topK)
 
-        val start = System.nanoTime()
-        repeat(queries) { topK(store, query, dim, count, topK) }
-        val elapsedMs = (System.nanoTime() - start) / 1_000_000.0
+        var iterations = 0
+        var best = Double.MAX_VALUE
+        val measureStart = System.nanoTime()
+        val measureEnd = measureStart + measureMs * 1_000_000
+        do {
+            val t0 = System.nanoTime()
+            topK(store, query, dim, count, topK)
+            val ms = (System.nanoTime() - t0) / 1_000_000.0
+            if (ms < best) best = ms
+            iterations++
+        } while (System.nanoTime() < measureEnd)
+        val totalMs = (System.nanoTime() - measureStart) / 1_000_000.0
 
         val runtime = Runtime.getRuntime()
         val usedMb = (runtime.totalMemory() - runtime.freeMemory()) / (1024 * 1024)
 
-        return Result(count, dim, elapsedMs / queries, usedMb)
+        return Result(count, dim, totalMs / iterations, best, iterations, usedMb)
     }
 
     private fun topK(

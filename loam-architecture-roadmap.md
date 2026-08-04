@@ -138,9 +138,31 @@ Sizing below is relative, not a schedule — solo FOSS projects move in bursts. 
 - Benchmark brute-force cosine similarity against synthetic 5k/20k/50k-chunk sets, on-device, to know your real ceiling before deciding whether sqlite-vec is ever needed.
 - **Exit criteria:** a working embedding call and a working SAF read, both proven on your own hardware, before any "real" app code exists.
 
+#### Phase 0 results — measured on a Pixel 8a (Tensor G3, Android 17)
+
+All three exit criteria met. Numbers are from a **release** build; see the note below on why that qualifier is load-bearing.
+
+| Measurement | Result |
+| --- | --- |
+| Embedding, MiniLM-L6-v2 INT8, maxLen 256 | 23–36 ms/chunk, 35 ms cold start, dim 384 |
+| SAF walk, 392-note vault | 13.5 s (~34 ms/file) |
+| Cosine search, 5k / 20k / 50k chunks | 1.36 / 5.52 / 13.81 ms per query |
+| Peak heap at 50k chunks | 107 MB |
+
+**Decision: brute-force cosine is sufficient; sqlite-vec is not needed.** Cost is linear at 0.276 µs per chunk with no inflection through 50k, so even a 200k-chunk vault (~24k notes at this vault's density) stays near 55 ms. The dependency stays off the list.
+
+Two findings worth carrying forward:
+
+- **Never benchmark a `debuggable` build.** The same code measured 533 ms at 50k as a debug build versus 13.81 ms as release — a **36x** difference, because `debuggable true` forces deoptimization support and blocks ART inlining. The debug numbers argued for adopting sqlite-vec; they were an artifact of the build type, not the algorithm.
+- **The SAF walk, not embedding, is the surprising cost.** 13.5 s to merely *enumerate* 392 files, before reading a byte. `DocumentFile` issues a separate ContentResolver query per node. Phase 1 should treat enumeration as its own progress-reported stage, and Phase 3's "paginated/streamed indexing" bullet should assume the walk is slow independent of vault size in bytes.
+
+Full-index estimate for this vault: ~3,300 chunks × ~25 ms ≈ 80 s of embedding plus 13.5 s of walking. Acceptable for a one-time index, but it needs visible progress rather than a spinner.
+
 ### Phase 1 — MVP: index + semantic search (no LLM yet)
 - Compose UI: pick vault, search, results list.
 - Chunking + embedding pipeline; Room/SQLCipher schema; WorkManager indexing job.
+  - The spike's chunker over-splits and must not be carried over as-is: it breaks at *every* heading regardless of accumulated size, which on the 392-note test vault yields 6,027 chunks averaging ~108 tokens, with 39% under 200 characters — against this roadmap's 200–400 token target. Gating heading breaks on a minimum chunk size gives 3,297 chunks averaging ~199 tokens with 3% undersized.
+  - It also never splits *within* an oversized block, so a table or fenced code block with no blank lines becomes a single chunk (77k characters in this vault). Anything past `maxLen` is silently truncated at embed time, so most of that note would never be retrievable. Chunking needs a hard character ceiling, not just a target.
 - Brute-force cosine similarity search; manual + periodic reindex.
 - **Exit criteria:** point it at your real notes, ask "did I ever write about X," get correct, meaning-based hits — with zero network permission anywhere in the manifest.
 

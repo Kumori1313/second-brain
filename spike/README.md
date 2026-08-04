@@ -69,6 +69,45 @@ first per the roadmap's model prerequisites if `../models/` is empty.
 
 Then launch **Loam Spike** and work through the three buttons in order.
 
+## Results (Pixel 8a, Tensor G3, Android 17)
+
+| Measurement | Result |
+| --- | --- |
+| Embedding, INT8, maxLen 256 | 23–36 ms/chunk, 35 ms cold start, dim 384 |
+| SAF walk, 392 `.md` files | 13,472 ms (~34 ms/file) |
+| Cosine 5k / 20k / 50k | 1.36 / 5.52 / 13.81 ms per query |
+| Heap at 50k | 107 MB |
+
+Brute force is linear at 0.276 µs/chunk through 50k, so **sqlite-vec is not needed**.
+
+### Benchmark a release build, never a debug one
+
+This is the single most important thing this spike learned. The same benchmark:
+
+| chunks | debug | release |
+| --- | --- | --- |
+| 5,000 | 50.46 ms | 1.36 ms |
+| 20,000 | 206.89 ms | 5.52 ms |
+| 50,000 | 533.07 ms | 13.81 ms |
+
+`debuggable true` forces deoptimization support and blocks ART inlining, costing
+**36x** on the hot dot-product loop. The debug numbers would have justified
+adding sqlite-vec to a project whose whole dependency policy is about keeping
+the list short.
+
+`CosineBench` also warms up and measures on wall clock rather than a fixed
+iteration count. The original single untimed pass never triggered JIT
+compilation, and the tell was cost *per chunk* falling as the store grew — a
+fixed startup cost being amortized. Fixing warmup alone moved 5k from 75 to
+51 ms; the remaining 36x was the build type.
+
+The `release` build type is signed with the debug key so it can be installed
+without a keystore. That is a spike-only shortcut — never ship it.
+
+```bash
+./gradlew installRelease
+```
+
 ## Reading the results
 
 **Embedding test** prints cold-start and per-call latency, then a similarity
@@ -149,11 +188,44 @@ Both bugs only surface on non-Latin or invisible characters — exactly the kind
 of input a personal vault quietly contains, and exactly what eyeballing English
 test strings would never reveal.
 
+### Embedder verification
+
+The in-app similarity check only asserts an *ordering*, which a subtly wrong
+mean pooling still passes. `tools/verify_embedder.py` reproduces the exact
+Android pipeline on desktop — same INT8 graph, same maxLen padding, same
+mask-aware pooling — so the on-device numbers have a reference:
+
+```bash
+.venv/bin/pip install onnxruntime numpy tokenizers
+.venv/bin/python tools/verify_embedder.py
+```
+
+Desktop and device agree to three decimals (`related=0.250 unrelated=0.062`),
+which confirms tokenizer, pooling, and normalization together.
+
+It also contrasts mean pooling against `[CLS]`, and the numbers show why the
+warning comment in `Embedder.kt` is there. `[CLS]` reports a *higher* related
+score (0.645 vs 0.250) but a much worse margin over the unrelated pair (0.073
+vs 0.188). The wrong pooling looks better by the obvious metric and
+discriminates worse — it would degrade retrieval while appearing fine.
+
+Quantization costs 0.013 on the related pair (fp32 0.262 → INT8 0.250), so the
+22MB INT8 model does the same job as the 87MB fp32 one.
+
 ## Known gaps
 
 - Benchmark vectors are uniform random, so they are further apart than real
   note embeddings. Timing is representative; recall quality is not.
-- Only the tokenizer has tests. The embedder's mean pooling is unverified
-  against sentence-transformers — the in-app similarity check is a smoke test,
-  not a correctness proof. Worth a proper differential test when this graduates
-  into Phase 1.
+- **The chunker over-splits and is not fit to carry into Phase 1.** It breaks at
+  every heading regardless of size: 6,027 chunks averaging ~108 tokens on the
+  test vault, 39% under 200 characters, against a 200–400 token target. Gating
+  heading breaks on a minimum size gives 3,297 chunks averaging ~199 tokens.
+  Run `tools/chunk_stats.py` to reproduce.
+- **The chunker never splits within a block**, so a table or fenced code block
+  containing no blank line becomes one chunk — 77k characters in this vault.
+  Everything past `maxLen` is silently truncated at embed time, so most of that
+  note is unretrievable. Needs a hard ceiling, not just a target.
+- `VaultReader.chunk()` takes a `Context` via its constructor despite not using
+  it, so it can't be unit-tested on the JVM. The stats above had to be produced
+  by a Python port. Making it a pure function would let the Phase 1 chunker be
+  tested directly against the vault.
