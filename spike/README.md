@@ -212,20 +212,54 @@ discriminates worse — it would degrade retrieval while appearing fine.
 Quantization costs 0.013 on the related pair (fp32 0.262 → INT8 0.250), so the
 22MB INT8 model does the same job as the 87MB fp32 one.
 
+## Chunking
+
+`Chunker` is deliberately Android-free so it can be tested on the JVM against
+the real vault. It previously lived on `VaultReader`, which takes a `Context`,
+so its output could only be checked by porting the algorithm to Python — and a
+port drifts from the thing it claims to describe.
+
+Three rules, each pinned by a regression test because breaking it produced a
+measured defect on the 392-note vault:
+
+1. **A heading breaks a chunk only once the chunk is worth keeping.** Breaking
+   at every heading emitted chunks holding nothing but a heading line.
+2. **Nothing exceeds `maxChars`.** Splitting only between blank-line blocks left
+   one 77k-character table whole; everything past the tokenizer's `maxLen` is
+   silently dropped at embed time, so most of that note was unretrievable while
+   appearing indexed.
+3. **Fenced code is one block.** Splitting on blank lines tears fences apart and
+   lets a `# comment` inside one read as a heading. 293 of 392 notes have fences.
+
+Effect on the test vault:
+
+| | before | after |
+| --- | --- | --- |
+| chunks | 6,027 | 3,427 |
+| mean | 434 chars (~108 tokens) | 802 chars (~200 tokens) |
+| under 200 chars | 39.4% | 2.5% |
+| largest | 77,111 chars | 2,000 chars |
+
+Chunks carry ~150 characters of overlap so a passage spanning a boundary stays
+retrievable from either side. Overlap is skipped after a heading break, where
+the author signalled a topic change and carrying the old topic forward would
+only blur it.
+
+```bash
+./gradlew testDebugUnitTest --tests '*ChunkerTest*'
+```
+
+The vault-wide test prints the live distribution and asserts the shape of it,
+so a future tuning change that quietly wrecks chunk sizes fails the build.
+
 ## Known gaps
 
 - Benchmark vectors are uniform random, so they are further apart than real
   note embeddings. Timing is representative; recall quality is not.
-- **The chunker over-splits and is not fit to carry into Phase 1.** It breaks at
-  every heading regardless of size: 6,027 chunks averaging ~108 tokens on the
-  test vault, 39% under 200 characters, against a 200–400 token target. Gating
-  heading breaks on a minimum size gives 3,297 chunks averaging ~199 tokens.
-  Run `tools/chunk_stats.py` to reproduce.
-- **The chunker never splits within a block**, so a table or fenced code block
-  containing no blank line becomes one chunk — 77k characters in this vault.
-  Everything past `maxLen` is silently truncated at embed time, so most of that
-  note is unretrievable. Needs a hard ceiling, not just a target.
-- `VaultReader.chunk()` takes a `Context` via its constructor despite not using
-  it, so it can't be unit-tested on the JVM. The stats above had to be produced
-  by a Python port. Making it a pure function would let the Phase 1 chunker be
-  tested directly against the vault.
+- Chunks are plain strings. Phase 1's store wants a heading breadcrumb and
+  source path per chunk, per the roadmap's data flow — `Chunker` would need to
+  return a record rather than a `String` to carry that.
+- Chunk sizing is tuned by character count as a proxy for tokens (~4 chars each).
+  That is a decent English approximation and a poor one for CJK, where the
+  tokenizer emits roughly one token per character. A CJK-heavy vault would get
+  chunks several times longer than intended.

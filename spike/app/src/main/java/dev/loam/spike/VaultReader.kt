@@ -72,27 +72,9 @@ class VaultReader(private val context: Context) {
         } ?: ""
 
     /**
-     * Heading/paragraph-aware chunking, roughly the shape Phase 1 needs.
-     * Kept simple here — the spike only needs realistic text lengths going into
-     * the embedder, not the final chunking strategy.
+     * Delegates to [Chunker], which is Android-free so it can be tested on the
+     * JVM against a real vault — see ChunkerTest.
      */
-    fun chunk(markdown: String, targetChars: Int = 1200): List<String> {
-        val blocks = markdown.split(Regex("\n\\s*\n"))
-        val chunks = ArrayList<String>()
-        val current = StringBuilder()
-
-        for (block in blocks) {
-            val trimmed = block.trim()
-            if (trimmed.isEmpty()) continue
-            // Start a new chunk at headings, so a chunk carries one topic.
-            val isHeading = trimmed.startsWith("#")
-            if ((current.length + trimmed.length > targetChars || isHeading) && current.isNotEmpty()) {
-                chunks.add(current.toString().trim())
-                current.clear()
-            }
-            current.append(trimmed).append("\n\n")
-        }
-        if (current.isNotBlank()) chunks.add(current.toString().trim())
-        return chunks
-    }
+    fun chunk(markdown: String, targetChars: Int = Chunker.DEFAULT_TARGET_CHARS): List<String> =
+        Chunker.chunk(markdown, targetChars = targetChars)
 }
