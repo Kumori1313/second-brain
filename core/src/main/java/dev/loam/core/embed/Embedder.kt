@@ -38,8 +38,26 @@ class Embedder(
     /** Input names vary between exports; resolve rather than assume. */
     private val inputNames: Set<String> = session.inputNames
 
+    /** Cumulative cost split, so a slow index can be attributed to a stage. */
+    var tokenizeNanos: Long = 0L
+        private set
+    var inferNanos: Long = 0L
+        private set
+
     fun embed(text: String, maxLen: Int = MAX_LEN): FloatArray {
+        val tokStart = System.nanoTime()
         val enc = tokenizer.encode(text, maxLen)
+        tokenizeNanos += System.nanoTime() - tokStart
+
+        val inferStart = System.nanoTime()
+        try {
+            return runGraph(enc, maxLen)
+        } finally {
+            inferNanos += System.nanoTime() - inferStart
+        }
+    }
+
+    private fun runGraph(enc: WordPieceTokenizer.Encoded, maxLen: Int): FloatArray {
         val shape = longArrayOf(1, maxLen.toLong())
 
         val ids = OnnxTensor.createTensor(env, LongBuffer.wrap(enc.inputIds), shape)

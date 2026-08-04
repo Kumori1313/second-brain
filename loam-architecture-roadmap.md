@@ -182,10 +182,35 @@ None of those queries share vocabulary with the notes they found, which is the p
 
 Two findings worth carrying into Phase 3:
 
-- **Indexing ran at ~116 ms/chunk against the 23–36 ms the spike measured.** Leading hypothesis is that WorkManager's executor runs at background thread priority, which Android confines to little cores, compounded by thermal throttling across a 6.6-minute run — but this is untested. Worth confirming before optimizing, since expedited work or a foreground service would change the scheduling.
+- **Indexing ran at ~116 ms/chunk against the 23–36 ms the spike measured.** This was investigated rather than left as a guess; see "Why indexing is slower than the spike suggested" below. The thread-priority hypothesis was wrong.
 - **The relevance threshold has to be calibrated against real chunks, not sentences.** An initial 0.35 came from the spike's sentence-to-sentence scores (0.250 related vs 0.062 unrelated) and was far too low: chunks are long, so they carry a bit of everything and score moderately against any query. The banana-bread query returned confident-looking Linux notes at 0.19 until it was recalibrated against the measured spread.
 
 Not yet done in Phase 1: no settings screen (chunk size, model choice, exclude patterns are all Phase 3), no biometric gate on the database key, and the index is loaded into heap whole — fine at 3,427 chunks, worth revisiting well before 50k.
+
+#### Why indexing is slower than the spike suggested
+
+Stage timings were added to `IndexVault` and two full re-indexes run on the Pixel 8a with CPU frequency and thermal status sampled alongside. Results, in order of how much they matter:
+
+**Embedding is 95% of the work.** Of a 420 s run: `embed=399 s`, `read=12.3 s`, `store=4.7 s`, `walk=1.7 s`, `chunk=0.1 s`. Worth noting the walk is now **1.7 s, down from the spike's 13.5 s** — that is the `DocumentsContract` rewrite paying off ~8x. Enumeration is no longer a cost worth optimizing.
+
+**Thermal throttling is real and accounts for the within-run degradation.** Sampling the big core during a run:
+
+| elapsed | CPU8 clock | thermal status | ms/chunk |
+| --- | --- | --- | --- |
+| 10 s | 2.91 GHz | 0 | 106.7 |
+| 50 s | 2.29 GHz | 0 | 117.4 |
+| 90 s | 1.89 GHz | 1 | 126.8 |
+| 130 s | 1.16 GHz | 1 | 135.3 |
+
+The clock falls 2.5x and `Thermal Status` flips to 1. A second run started on an already-warm device averaged 130 ms/chunk against 116 ms/chunk from cool. Reading thermal status *after* a run shows 0 and is misleading — it has to be sampled during.
+
+**The thread-priority hypothesis was wrong.** `CoroutineWorker.doWork` runs on `Dispatchers.Default`, not WorkManager's background executor: the logged thread is `DefaultDispatcher-worker-N` at `prio=0` (default), never the background priority that would confine it to little cores. There was nothing to fix.
+
+**Tokenization is not the cost either** — 0.6–1.1 ms per chunk against 81–100 ms for inference, so the hand-rolled WordPiece is not worth optimizing.
+
+**The spike's 23–36 ms was a burst measurement, not a sustained one.** Even cool, at 2.36 GHz, with tokenization excluded, inference alone is ~83 ms per chunk. The spike timed three embeddings on an idle device at full boost with no database, no UI recomposition, and no concurrent work; ONNX Runtime is multi-threaded and therefore highly sensitive to core availability. The number was never wrong, it just could not describe sustained load — the same lesson the `debuggable` build taught in Phase 0, in a different costume. **Take on-device performance numbers from a run shaped like the real workload.**
+
+The concrete optimization this points at, for Phase 3: every chunk is padded to `maxLen = 256` regardless of its actual length, but the model's axes are fully dynamic (`['batch_size', 'sequence_length']`) and attention is O(n²). Measured on desktop: 64 tokens 4.3 ms, 128 tokens 6.7 ms, 256 tokens 11.4 ms. Median chunk is ~157 tokens, and search queries are far shorter, so padding to a bucket near the real token count rather than a fixed 256 should cut both indexing and query latency without touching retrieval quality. Batching multiple chunks per `run()` is the other candidate.
 
 ### Phase 2 — RAG Q&A
 - Integrate the chosen LLM runtime; GGUF model loading; a model download/picker flow (this is where INTERNET permission enters, scoped narrowly to "fetch model").
