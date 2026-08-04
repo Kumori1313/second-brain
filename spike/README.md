@@ -28,20 +28,23 @@ receivers. It grants nothing outward and is not network access.
 
 ## Building
 
-Android Studio is installed as a **Flatpak** on this machine, so its bundled JDK
-isn't on `$PATH` and there is no host JDK. Point Gradle at the Flatpak's JBR:
+There is no host JDK on this machine, so Gradle needs pointing at the JDK that
+ships inside Android Studio (installed from the AUR, at `/opt/android-studio`):
 
 ```bash
-export JAVA_HOME=/var/lib/flatpak/app/com.google.AndroidStudio/current/active/files/extra/jbr
+export JAVA_HOME=/opt/android-studio/jbr
 export ANDROID_HOME=$HOME/Android/Sdk
 ./gradlew assembleDebug
 ```
 
-Use the `current/active` path shown above, not the hashed
-`x86_64/stable/<sha>/` one — the hash changes every time Studio updates.
-
 Alternatively `sudo pacman -S jdk21-openjdk` for a host JDK and skip the
 `JAVA_HOME` export. Building inside Android Studio itself needs none of this.
+
+If Studio was installed some other way, `JAVA_HOME` changes with it — a Flatpak
+install puts the JBR under
+`/var/lib/flatpak/app/com.google.AndroidStudio/current/active/files/extra/jbr`.
+Use that `current/active` path rather than the hashed `x86_64/stable/<sha>/`
+one, since the hash changes on every Studio update.
 
 ### Version notes
 
