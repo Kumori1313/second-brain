@@ -166,6 +166,27 @@ Full-index estimate for this vault: ~3,300 chunks × ~25 ms ≈ 80 s of embeddin
 - Brute-force cosine similarity search; manual + periodic reindex.
 - **Exit criteria:** point it at your real notes, ask "did I ever write about X," get correct, meaning-based hits — with zero network permission anywhere in the manifest.
 
+#### Phase 1 status — exit criteria met, verified on device
+
+Built as a two-module Gradle build at the repo root (`:app` Compose UI, `:core` domain/data); `spike/` stays a separate build until deleted. Indexed the 392-note test vault on a Pixel 8a: **3,427 chunks in 397 s**, then searched it.
+
+| Query | Top hit | Score |
+| --- | --- | --- |
+| "how do I set up a virtual machine" | Configure Default Virtual Hardware Using the Wizard | 0.68 |
+| "encrypting a disk with LUKS" | MOC Arch Install FULL › LUKS2 Encryption Setup | 0.66 |
+| "banana bread recipe with walnuts" | *No good matches* | — |
+
+None of those queries share vocabulary with the notes they found, which is the point.
+
+**Permissions, verified against the built APK rather than the manifest:** WorkManager's manifest merger contributes `ACCESS_NETWORK_STATE`, `WAKE_LOCK`, `RECEIVE_BOOT_COMPLETED`, and `FOREGROUND_SERVICE`. `ACCESS_NETWORK_STATE` grants no data access, but shipping a permission with "NETWORK" in its name would undercut Core principle #1 for anyone reading the F-Droid listing, so it is stripped with `tools:node="remove"` — indexing was then confirmed to still run. The other three are kept deliberately: they are what let a long index survive the screen turning off and resume after a reboot. There is no `INTERNET` permission.
+
+Two findings worth carrying into Phase 3:
+
+- **Indexing ran at ~116 ms/chunk against the 23–36 ms the spike measured.** Leading hypothesis is that WorkManager's executor runs at background thread priority, which Android confines to little cores, compounded by thermal throttling across a 6.6-minute run — but this is untested. Worth confirming before optimizing, since expedited work or a foreground service would change the scheduling.
+- **The relevance threshold has to be calibrated against real chunks, not sentences.** An initial 0.35 came from the spike's sentence-to-sentence scores (0.250 related vs 0.062 unrelated) and was far too low: chunks are long, so they carry a bit of everything and score moderately against any query. The banana-bread query returned confident-looking Linux notes at 0.19 until it was recalibrated against the measured spread.
+
+Not yet done in Phase 1: no settings screen (chunk size, model choice, exclude patterns are all Phase 3), no biometric gate on the database key, and the index is loaded into heap whole — fine at 3,427 chunks, worth revisiting well before 50k.
+
 ### Phase 2 — RAG Q&A
 - Integrate the chosen LLM runtime; GGUF model loading; a model download/picker flow (this is where INTERNET permission enters, scoped narrowly to "fetch model").
 - Build retrieve-then-generate; the "sources used" panel.

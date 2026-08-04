@@ -1,0 +1,64 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  There are deliberately NO <uses-permission> entries here.
+
+  Core principle #1: search must work in airplane mode, and the app must be
+  unable to exfiltrate a vault even if it wanted to. No INTERNET means no
+  telemetry, no crash reporting, no "anonymous usage stats" — not as policy,
+  but as something the OS enforces.
+
+  No storage permission either: SAF grants access to the single tree the user
+  picked, which is strictly narrower than READ_EXTERNAL_STORAGE.
+
+  Verify against the built APK rather than trusting this file:
+    aapt2 dump permissions app/build/outputs/apk/release/app-release.apk
+
+  The only entry should be DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION, a
+  self-scoped signature permission AndroidX injects for local broadcasts. It
+  grants nothing outward.
+
+  INTERNET enters in Phase 2, scoped to fetching an LLM model on explicit user
+  action — and that is the only legitimate use.
+-->
+<manifest
+    xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <!--
+      WorkManager's own manifest contributes ACCESS_NETWORK_STATE so it can
+      support NetworkType constraints. Loam never uses one — it has no network
+      to be constrained by — and shipping a permission with "NETWORK" in the
+      name would contradict, to anyone reading the F-Droid listing, the one
+      guarantee this project leads with.
+
+      It grants no data access even when present, so this is about the claim
+      being literally true rather than about capability. Verified on-device:
+      indexing runs to completion without it.
+
+      WAKE_LOCK, RECEIVE_BOOT_COMPLETED and FOREGROUND_SERVICE also arrive from
+      WorkManager and are kept deliberately: they are what let a long index
+      survive the screen turning off and resume after a reboot.
+    -->
+    <uses-permission
+        android:name="android.permission.ACCESS_NETWORK_STATE"
+        tools:node="remove" />
+
+    <application
+        android:allowBackup="false"
+        android:icon="@mipmap/ic_launcher"
+        android:label="@string/app_name"
+        android:supportsRtl="true"
+        android:theme="@style/Theme.Loam">
+
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:label="@string/app_name"
+            android:windowSoftInputMode="adjustResize">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+    </application>
+</manifest>
