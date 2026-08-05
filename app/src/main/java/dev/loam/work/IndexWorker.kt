@@ -98,7 +98,7 @@ class IndexWorker(
             WorkManager.getInstance(context).enqueueUniquePeriodicWork(
                 UNIQUE_PERIODIC,
                 ExistingPeriodicWorkPolicy.KEEP,
-                PeriodicWorkRequestBuilder<IndexWorker>(15, TimeUnit.MINUTES)
+                PeriodicWorkRequestBuilder<IndexWorker>(6, TimeUnit.HOURS)
                     .setConstraints(
                         androidx.work.Constraints.Builder()
                             .setRequiresBatteryNotLow(true)
