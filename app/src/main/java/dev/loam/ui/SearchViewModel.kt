@@ -132,6 +132,17 @@ class SearchViewModel(app: Application) : AndroidViewModel(app) {
 
                     WorkInfo.State.SUCCEEDED -> {
                         runningWorkId = null
+                        if (info.outputData.getBoolean(IndexWorker.KEY_SKIPPED, false)) {
+                            // Nothing ran, so nothing changed — reporting "up to
+                            // date" here would claim a guarantee this run never
+                            // checked, and reloading the index would throw away
+                            // a warm cache to no purpose.
+                            _state.value = _state.value.copy(
+                                indexing = false,
+                                indexStatus = "Already indexing",
+                            )
+                            return@onEach
+                        }
                         val notes = info.outputData.getInt(IndexWorker.KEY_NOTES_INDEXED, 0)
                         val chunks = info.outputData.getInt(IndexWorker.KEY_CHUNKS, 0)
                         val secs = info.outputData.getLong(IndexWorker.KEY_MILLIS, 0) / 1000.0

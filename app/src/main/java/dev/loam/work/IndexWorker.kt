@@ -37,7 +37,7 @@ class IndexWorker(
         return try {
             val done = loam.indexVault.run(treeUri) { progress ->
                 setProgressAsync(progress.toData())
-            }
+            } ?: return Result.success(workDataOf(KEY_SKIPPED to true))
             loam.searchNotes.invalidate()
             Result.success(
                 workDataOf(
@@ -63,6 +63,13 @@ class IndexWorker(
         const val KEY_NOTES_INDEXED = "notesIndexed"
         const val KEY_MILLIS = "millis"
         const val KEY_ERROR = "error"
+
+        /**
+         * Set when this run did nothing because another was already in flight.
+         * Distinguishing it from a real run matters: both index zero notes, but
+         * only one of them means the index is actually up to date.
+         */
+        const val KEY_SKIPPED = "skipped"
 
         const val STAGE_WALKING = "walking"
         const val STAGE_EMBEDDING = "embedding"
@@ -91,7 +98,7 @@ class IndexWorker(
             WorkManager.getInstance(context).enqueueUniquePeriodicWork(
                 UNIQUE_PERIODIC,
                 ExistingPeriodicWorkPolicy.KEEP,
-                PeriodicWorkRequestBuilder<IndexWorker>(6, TimeUnit.HOURS)
+                PeriodicWorkRequestBuilder<IndexWorker>(15, TimeUnit.MINUTES)
                     .setConstraints(
                         androidx.work.Constraints.Builder()
                             .setRequiresBatteryNotLow(true)

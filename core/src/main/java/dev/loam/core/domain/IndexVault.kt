@@ -13,6 +13,7 @@ import dev.loam.core.vault.TokenCounter
 import dev.loam.core.vault.VaultReader
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.sync.Mutex
 
 /**
  * Walks the vault, embeds what changed, and writes it to the encrypted store.
@@ -30,6 +31,9 @@ class IndexVault(
     private val embedderFactory: () -> Embedder,
     private val tokenCounter: TokenCounter,
 ) {
+
+    /** Held for the duration of a pass; see [run] for why the second one skips. */
+    private val running = Mutex()
 
     sealed interface Progress {
         data class Walking(val filesFound: Int) : Progress
@@ -73,9 +77,42 @@ class IndexVault(
         }
     }
 
+    /**
+     * Indexes the vault, or returns null if a pass is already running.
+     *
+     * The manual reindex and the periodic catch-up are separate unique work
+     * names, so WorkManager is free to run them at the same time and does —
+     * observed on device as two workers walking the vault in the same
+     * millisecond. Nothing had changed that run so nothing was harmed, but with
+     * real edits pending both passes would see the same notes as stale and
+     * embed every one of them twice, at ~20 ms per chunk, while interleaving
+     * writes for the same note.
+     *
+     * Skipping the second is right rather than merely cheap: a catch-up pass
+     * that arrives while indexing is underway has nothing to add, and one that
+     * queued instead would run a redundant walk the moment the first finished.
+     *
+     * Guarded in-process because [Loam] is a singleton and both workers run in
+     * the app process. A second process would need a different mechanism.
+     */
     suspend fun run(
         treeUri: Uri,
         onProgress: (Progress) -> Unit = {},
+    ): Progress.Done? {
+        if (!running.tryLock()) {
+            Log.i(TAG, "skipped: a pass is already running")
+            return null
+        }
+        return try {
+            indexOnce(treeUri, onProgress)
+        } finally {
+            running.unlock()
+        }
+    }
+
+    private suspend fun indexOnce(
+        treeUri: Uri,
+        onProgress: (Progress) -> Unit,
     ): Progress.Done {
         val start = System.currentTimeMillis()
         val t = Timings()
