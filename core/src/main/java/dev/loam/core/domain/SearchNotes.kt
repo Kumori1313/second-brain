@@ -1,6 +1,7 @@
 package dev.loam.core.domain
 
 import android.content.Context
+import android.util.Log
 import dev.loam.core.embed.Embedder
 import dev.loam.core.search.VectorIndex
 import dev.loam.core.store.LoamDatabase
@@ -37,6 +38,19 @@ class SearchNotes(
     private val mutex = Mutex()
     private var cached: VectorIndex? = null
 
+    /**
+     * One long-lived session for querying.
+     *
+     * Building an [Embedder] per search measured ~314 ms — an ONNX session
+     * plus re-parsing a 30,522-line vocabulary — against 17 ms to actually
+     * embed the query. Rebuilding it per keystroke made every other
+     * optimization invisible. Kept alive for the process and serialized by
+     * [mutex], since ORT sessions are not documented as safe for concurrent
+     * `run` calls. Indexing builds its own, so a long index never blocks a
+     * search.
+     */
+    private var embedder: Embedder? = null
+
     /** Call after indexing; the next search reloads from the store. */
     suspend fun invalidate() = mutex.withLock { cached = null }
 
@@ -47,13 +61,24 @@ class SearchNotes(
     ): List<Result> {
         if (query.isBlank()) return emptyList()
 
-        val index = mutex.withLock {
-            cached ?: load().also { cached = it }
+        val embedStart = System.nanoTime()
+        val (index, vector) = mutex.withLock {
+            val idx = cached ?: load().also { cached = it }
+            val emb = embedder ?: embedderFactory().also { embedder = it }
+            idx to (if (idx.size == 0) FloatArray(0) else emb.embed(query))
         }
+        val embedMs = (System.nanoTime() - embedStart) / 1_000_000.0
         if (index.size == 0) return emptyList()
 
-        val vector = embedderFactory().use { it.embed(query) }
+        val scanStart = System.nanoTime()
         val hits = index.search(vector, k = limit, minScore = minScore)
+        val scanMs = (System.nanoTime() - scanStart) / 1_000_000.0
+
+        Log.i(
+            TAG,
+            "query chunks=${index.size} embed=%.1fms scan=%.1fms hits=%d"
+                .format(embedMs, scanMs, hits.size)
+        )
         if (hits.isEmpty()) return emptyList()
 
         val dao = LoamDatabase.get(context).dao()
@@ -85,6 +110,8 @@ class SearchNotes(
     }
 
     companion object {
+        private const val TAG = "LoamSearch"
+
         /**
          * Below this, a hit is noise rather than a weak match.
          *

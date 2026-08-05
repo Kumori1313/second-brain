@@ -6,9 +6,19 @@ import androidx.room.Room
 import androidx.room.RoomDatabase
 import net.zetetic.database.sqlcipher.SupportOpenHelperFactory
 
+/**
+ * Bump `version` whenever stored vectors stop being comparable to freshly
+ * computed ones, not only when columns change. The destructive migration then
+ * forces a reindex, which is cheap because the index is derived from the user's
+ * own files.
+ *
+ * v2: inputs are padded to a 32-token bucket instead of a flat 256. Embeddings
+ * are not perfectly padding-invariant on the INT8 graph, so v1 vectors would be
+ * subtly mismatched against v2 queries.
+ */
 @Database(
     entities = [NoteEntity::class, ChunkEntity::class],
-    version = 1,
+    version = 2,
     exportSchema = true,
 )
 abstract class LoamDatabase : RoomDatabase() {

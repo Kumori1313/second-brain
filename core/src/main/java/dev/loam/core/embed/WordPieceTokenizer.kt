@@ -49,8 +49,12 @@ class WordPieceTokenizer private constructor(private val vocab: Map<String, Int>
         val tokenTypeIds: LongArray,
     )
 
-    fun encode(text: String, maxLen: Int = 256): Encoded {
-        val pieces = ArrayList<Int>(maxLen)
+    /**
+     * Token ids with `[CLS]`/`[SEP]`, truncated to [maxLen]. Unpadded, so the
+     * caller can decide how far to pad — see [pad].
+     */
+    fun tokenize(text: String, maxLen: Int = 256): IntArray {
+        val pieces = ArrayList<Int>(minOf(maxLen, 64))
         pieces.add(clsId)
 
         for (word in basicTokenize(text)) {
@@ -61,17 +65,27 @@ class WordPieceTokenizer private constructor(private val vocab: Map<String, Int>
             }
         }
         pieces.add(sepId)
+        return IntArray(pieces.size) { pieces[it] }
+    }
 
-        val ids = LongArray(maxLen)
-        val mask = LongArray(maxLen)
-        for (i in pieces.indices) {
-            ids[i] = pieces[i].toLong()
+    /** Pads [tokens] out to [length]. Must be at least `tokens.size`. */
+    fun pad(tokens: IntArray, length: Int): Encoded {
+        require(length >= tokens.size) {
+            "cannot pad ${tokens.size} tokens into $length slots"
+        }
+        val ids = LongArray(length)
+        val mask = LongArray(length)
+        for (i in tokens.indices) {
+            ids[i] = tokens[i].toLong()
             mask[i] = 1L
         }
         // Remaining entries stay 0 — [PAD] is id 0 in BERT vocabs, and a zero
         // attention mask keeps them out of the mean pooling downstream.
-        return Encoded(ids, mask, LongArray(maxLen))
+        return Encoded(ids, mask, LongArray(length))
     }
+
+    fun encode(text: String, maxLen: Int = 256): Encoded =
+        pad(tokenize(text, maxLen), maxLen)
 
     /**
      * BERT's `_clean_text`: drop null/replacement/control characters outright,

@@ -210,7 +210,29 @@ The clock falls 2.5x and `Thermal Status` flips to 1. A second run started on an
 
 **The spike's 23–36 ms was a burst measurement, not a sustained one.** Even cool, at 2.36 GHz, with tokenization excluded, inference alone is ~83 ms per chunk. The spike timed three embeddings on an idle device at full boost with no database, no UI recomposition, and no concurrent work; ONNX Runtime is multi-threaded and therefore highly sensitive to core availability. The number was never wrong, it just could not describe sustained load — the same lesson the `debuggable` build taught in Phase 0, in a different costume. **Take on-device performance numbers from a run shaped like the real workload.**
 
-The concrete optimization this points at, for Phase 3: every chunk is padded to `maxLen = 256` regardless of its actual length, but the model's axes are fully dynamic (`['batch_size', 'sequence_length']`) and attention is O(n²). Measured on desktop: 64 tokens 4.3 ms, 128 tokens 6.7 ms, 256 tokens 11.4 ms. Median chunk is ~157 tokens, and search queries are far shorter, so padding to a bucket near the real token count rather than a fixed 256 should cut both indexing and query latency without touching retrieval quality. Batching multiple chunks per `run()` is the other candidate.
+#### Dynamic sequence length — done, and what it uncovered
+
+Every input was padded to `maxLen = 256` regardless of length, but the graph's axes are dynamic (`['batch_size', 'sequence_length']`) and attention is O(n²) — desktop-measured at 4.3 ms for 64 tokens against 11.4 ms for 256. Inputs are now padded up to a 32-token bucket instead. Bucketing rather than exact length keeps the number of distinct shapes small enough for ONNX Runtime to reuse execution plans.
+
+Measured on the Pixel 8a, both runs from cool:
+
+| | fixed 256 | bucketed |
+| --- | --- | --- |
+| full index of 392 notes | 420.2 s | **358.1 s** |
+| embed per chunk | 116.4 ms | **98.7 ms** |
+| query inference | ~78 ms | **17 ms** |
+
+Padding is not perfectly neutral on the INT8 graph — the same text padded to its own length versus 256 measures 0.9988 mean cosine, since the mask is a large negative bias rather than a true `-inf`. That is far inside the margin between a real hit (~0.66) and noise (~0.19), and top-10 overlap across regimes measured 9.5/10, but it does mean vectors are only comparable to others built the same way. `LoamDatabase`'s version was bumped to 2 so the destructive migration forces a reindex; **bump it again whenever stored vectors stop being comparable, not only when columns change.**
+
+**The larger find was on the query path.** Measuring rather than assuming showed a search costing 331 ms of which only 17 ms was inference — the rest was constructing an ONNX session and re-parsing a 30,522-line vocabulary *per keystroke*. Caching one session for the process took warm queries to **12 ms**, a 27x improvement that dwarfs the optimization that exposed it. The first query still costs ~745 ms (session plus loading the index from the store); warming it during app start is an easy Phase 3 win.
+
+#### Chunks overflow the model's window — 14% of the vault is never embedded
+
+Measuring token lengths to size the buckets surfaced a correctness bug that matters more than any of the above. The chunker sizes by characters assuming ~4 per token; this vault measures **3.46**, because code, paths and URLs tokenize far denser than prose. So a 1,200-character target is ~350 tokens and the 2,000-character ceiling is ~580 — both past the model's 256-token window.
+
+On the 392-note vault: **28.3% of chunks exceed 256 tokens, and 14.4% of the vault's text is truncated away before it ever reaches the embedder.** Those passages are unsearchable while appearing indexed, which is the same silent-failure shape as the earlier `maxLen` truncation bug, one layer up.
+
+The fix is to size chunks by real token count rather than a character proxy — the chunker already lives beside the tokenizer in `:core`, and tokenizing during chunking costs ~1 ms per chunk against ~99 ms to embed one. This also closes the CJK gap noted earlier, which is the same defect with a worse constant (~1 char/token).
 
 ### Phase 2 — RAG Q&A
 - Integrate the chosen LLM runtime; GGUF model loading; a model download/picker flow (this is where INTERNET permission enters, scoped narrowly to "fetch model").

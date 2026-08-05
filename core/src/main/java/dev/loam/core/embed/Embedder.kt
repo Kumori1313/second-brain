@@ -46,12 +46,14 @@ class Embedder(
 
     fun embed(text: String, maxLen: Int = MAX_LEN): FloatArray {
         val tokStart = System.nanoTime()
-        val enc = tokenizer.encode(text, maxLen)
+        val tokens = tokenizer.tokenize(text, maxLen)
+        val padTo = bucketFor(tokens.size, maxLen)
+        val enc = tokenizer.pad(tokens, padTo)
         tokenizeNanos += System.nanoTime() - tokStart
 
         val inferStart = System.nanoTime()
         try {
-            return runGraph(enc, maxLen)
+            return runGraph(enc, padTo)
         } finally {
             inferNanos += System.nanoTime() - inferStart
         }
@@ -115,9 +117,43 @@ class Embedder(
         const val DIMENSIONS = 384
 
         /**
-         * Token budget per chunk. Everything past this is dropped, which is why
-         * the chunker enforces a hard character ceiling rather than a target.
+         * Token budget per input. Everything past this is dropped.
+         *
+         * The chunker sizes by characters at roughly 4 per token, but this
+         * vault measures 3.46 — code, paths and URLs tokenize far denser than
+         * prose — so 28% of chunks currently overflow and 14% of the vault's
+         * text never reaches the model. Sizing chunks by real token count is
+         * the fix; see the roadmap's Phase 3 notes.
          */
         const val MAX_LEN = 256
+
+        /**
+         * Inputs are padded up to a multiple of this rather than to [MAX_LEN].
+         *
+         * The graph's axes are dynamic (`['batch_size', 'sequence_length']`)
+         * and attention is O(n²), so padding a short input to 256 buys nothing
+         * but work: desktop-measured, 64 tokens costs 4.3 ms against 11.4 ms at
+         * 256. Bucketing rather than using the exact length keeps the number of
+         * distinct shapes small, so ONNX Runtime can reuse execution plans and
+         * memory arenas instead of re-planning per input.
+         *
+         * Worth 21% of padded work while indexing this vault, and far more on
+         * queries — a search phrase is ~8 tokens, so it pads to 32 rather than
+         * 256.
+         */
+        const val BUCKET = 32
+
+        /**
+         * Padding is not perfectly neutral on the INT8 graph: the same text
+         * padded to its own length versus to 256 measures 0.9988 mean cosine,
+         * because the mask is applied as a large negative bias rather than a
+         * true -inf and quantization noise rides along with it. That is well
+         * inside the margin between a real hit (~0.66) and noise (~0.19), but
+         * it does mean vectors are only comparable to others built the same
+         * way. Changing this constant invalidates an existing index, which is
+         * why LoamDatabase's version was bumped alongside it.
+         */
+        fun bucketFor(tokens: Int, maxLen: Int): Int =
+            minOf(maxLen, maxOf(BUCKET, ((tokens + BUCKET - 1) / BUCKET) * BUCKET))
     }
 }
