@@ -235,9 +235,21 @@ private fun openInExternalApp(context: android.content.Context, result: SearchNo
     // text/markdown first so a real markdown app wins the chooser, falling back
     // to text/plain because plenty of devices register the latter only.
     //
-    // A plain ACTION_VIEW rather than Intent.createChooser: the chooser appears
-    // once and the user can then set a default, whereas createChooser would ask
-    // again on every single result they open.
+    // A plain ACTION_VIEW rather than Intent.createChooser, because
+    // createChooser forces the picker on every single open. Plain ACTION_VIEW
+    // at least *allows* the system default to apply.
+    //
+    // Whether it actually applies is out of our hands, and on a real device it
+    // often does not. Measured on a Pixel 8a (Android 17): "Always" writes a
+    // preferred activity built from the MIME type alone, but the system
+    // re-resolves using the full intent including the content URI, which admits
+    // extra scheme-matching activities (a file manager's "Save as" here). The
+    // recorded set never matches the launch-time set, so the stored default is
+    // silently ignored and the picker returns every time. Reproducible from adb
+    // with no Loam involved, so nothing about this intent is the cause.
+    //
+    // If that friction is worth removing, the fix is Loam remembering the
+    // chosen app itself and calling setPackage() — not more intent tweaking.
     //
     // Read-only grant. Loam is not a note editor and has no business writing to
     // the vault, so the editor that opens gets exactly what it needs to display
