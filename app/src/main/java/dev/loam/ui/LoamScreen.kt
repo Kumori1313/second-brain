@@ -2,6 +2,7 @@ package dev.loam.ui
 
 import android.content.Intent
 import android.net.Uri
+import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
@@ -231,18 +232,34 @@ private fun Centered(content: @Composable () -> Unit) {
  * hands off. Read-only grant, since it has no business writing to the vault.
  */
 private fun openInExternalApp(context: android.content.Context, result: SearchNotes.Result) {
-    val intent = Intent(Intent.ACTION_VIEW).apply {
-        setDataAndType(Uri.parse(result.uri), "text/markdown")
-        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-    }
-    runCatching { context.startActivity(intent) }.onFailure {
+    // text/markdown first so a real markdown app wins the chooser, falling back
+    // to text/plain because plenty of devices register the latter only.
+    //
+    // A plain ACTION_VIEW rather than Intent.createChooser: the chooser appears
+    // once and the user can then set a default, whereas createChooser would ask
+    // again on every single result they open.
+    //
+    // Read-only grant. Loam is not a note editor and has no business writing to
+    // the vault, so the editor that opens gets exactly what it needs to display
+    // the file and nothing more.
+    val opened = listOf("text/markdown", "text/plain").any { mime ->
         runCatching {
             context.startActivity(
                 Intent(Intent.ACTION_VIEW).apply {
-                    setDataAndType(Uri.parse(result.uri), "text/plain")
+                    setDataAndType(Uri.parse(result.uri), mime)
                     addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
                 }
             )
-        }
+        }.isSuccess
+    }
+    if (!opened) {
+        // Previously this failed silently: on a device with no text viewer,
+        // tapping a result did nothing at all and looked like a broken app
+        // rather than a missing one.
+        Toast.makeText(
+            context,
+            "No app installed that can open ${result.displayName}",
+            Toast.LENGTH_LONG,
+        ).show()
     }
 }
