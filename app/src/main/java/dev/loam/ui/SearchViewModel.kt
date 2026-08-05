@@ -47,6 +47,26 @@ class SearchViewModel(app: Application) : AndroidViewModel(app) {
         observeIndexing()
         observeCounts()
         warmUp()
+        ensurePeriodicIndexing()
+    }
+
+    /**
+     * Re-asserts the periodic reindex on every start, because scheduling it
+     * only when the vault is picked leaves a way to lose it permanently.
+     *
+     * The vault URI lives in SharedPreferences and the schedule lives in
+     * WorkManager's own database. Those are separate stores that can diverge:
+     * clearing app data or restoring a partial backup can leave a perfectly
+     * good vault with no schedule attached, and since [onVaultPicked] is the
+     * only other caller, nothing would ever put it back. The failure is silent
+     * — search keeps working against an index that quietly stops updating.
+     *
+     * Idempotent by way of KEEP, which is load-bearing here; see
+     * [IndexWorker.schedulePeriodic].
+     */
+    private fun ensurePeriodicIndexing() {
+        if (loam.vaultLocation.treeUri == null) return
+        IndexWorker.schedulePeriodic(getApplication())
     }
 
     /**

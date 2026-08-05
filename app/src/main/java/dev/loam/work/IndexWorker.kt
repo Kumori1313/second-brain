@@ -79,6 +79,13 @@ class IndexWorker(
          * Battery-friendly catch-up pass. Deliberately unconstrained by network
          * — there is no network involved, and adding a constraint the app can
          * never satisfy would stall it forever.
+         *
+         * Safe to call on every app start, and [SearchViewModel] does. KEEP is
+         * what makes that safe and is not interchangeable with UPDATE here:
+         * UPDATE restarts the period on each call, so a user who opens Loam
+         * more often than the interval would reset the clock every time and the
+         * pass would never come due. KEEP leaves an existing schedule running
+         * and only fills in a missing one.
          */
         fun schedulePeriodic(context: Context) {
             WorkManager.getInstance(context).enqueueUniquePeriodicWork(
