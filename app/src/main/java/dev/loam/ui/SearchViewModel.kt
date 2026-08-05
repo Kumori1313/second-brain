@@ -6,6 +6,7 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import androidx.work.WorkInfo
 import androidx.work.WorkManager
+import java.util.UUID
 import dev.loam.core.Loam
 import dev.loam.core.domain.SearchNotes
 import dev.loam.work.IndexWorker
@@ -45,6 +46,23 @@ class SearchViewModel(app: Application) : AndroidViewModel(app) {
     init {
         observeIndexing()
         observeCounts()
+        warmUp()
+    }
+
+    /**
+     * Builds the ONNX session and loads the vector index before the user types.
+     *
+     * Measured at ~750 ms cold against 12 ms warm, so without this the first
+     * search of every session looks broken and every later one is instant —
+     * the worst possible shape for a search box, since it teaches the user to
+     * distrust it exactly once per launch.
+     *
+     * Skipped when no vault is set: there is nothing to load, and building a
+     * session would just delay the folder picker.
+     */
+    private fun warmUp() {
+        if (loam.vaultLocation.treeUri == null) return
+        viewModelScope.launch { loam.searchNotes.warmUp() }
     }
 
     private fun observeCounts() {
@@ -57,13 +75,34 @@ class SearchViewModel(app: Application) : AndroidViewModel(app) {
             .launchIn(viewModelScope)
     }
 
+    /**
+     * The work we have actually watched run, as opposed to a terminal state
+     * WorkManager replays to every new subscriber.
+     *
+     * Without this, each app launch sees the *previous* run's SUCCEEDED and
+     * treats it as fresh: it invalidates the index warm-up just finished
+     * loading, reloads it, and reports a duration from a run that happened days
+     * ago as though it had just completed.
+     */
+    private var runningWorkId: UUID? = null
+
     private fun observeIndexing() {
         val wm = WorkManager.getInstance(getApplication())
         wm.getWorkInfosForUniqueWorkFlow(IndexWorker.UNIQUE_MANUAL)
             .onEach { infos ->
                 val info = infos.firstOrNull() ?: return@onEach
+
+                // Terminal states are replayed to every new subscriber, so a
+                // completion we never saw running belongs to a previous launch.
+                // Acting on it would invalidate the index warm-up just loaded
+                // and report a days-old duration as if it had just happened.
+                // The live note and chunk counts already say what is indexed.
+                val isReplay = info.state.isFinished && info.id != runningWorkId
+                if (isReplay) return@onEach
+
                 when (info.state) {
                     WorkInfo.State.RUNNING -> {
+                        runningWorkId = info.id
                         _state.value = _state.value.copy(
                             indexing = true,
                             error = null,
@@ -72,6 +111,7 @@ class SearchViewModel(app: Application) : AndroidViewModel(app) {
                     }
 
                     WorkInfo.State.SUCCEEDED -> {
+                        runningWorkId = null
                         val notes = info.outputData.getInt(IndexWorker.KEY_NOTES_INDEXED, 0)
                         val chunks = info.outputData.getInt(IndexWorker.KEY_CHUNKS, 0)
                         val secs = info.outputData.getLong(IndexWorker.KEY_MILLIS, 0) / 1000.0
@@ -83,19 +123,28 @@ class SearchViewModel(app: Application) : AndroidViewModel(app) {
                                 "Indexed %d notes, %d chunks in %.1fs".format(notes, chunks, secs)
                             },
                         )
-                        // Vectors changed underneath the cache.
+                        // Vectors changed underneath the cache. Reload eagerly
+                        // rather than leaving the next search to pay for it —
+                        // indexing is exactly when the index grew largest.
                         viewModelScope.launch {
                             loam.searchNotes.invalidate()
-                            if (_state.value.query.isNotBlank()) search(_state.value.query)
+                            if (_state.value.query.isNotBlank()) {
+                                search(_state.value.query)
+                            } else {
+                                loam.searchNotes.warmUp()
+                            }
                         }
                     }
 
-                    WorkInfo.State.FAILED -> _state.value = _state.value.copy(
-                        indexing = false,
-                        indexStatus = null,
-                        error = info.outputData.getString(IndexWorker.KEY_ERROR)
-                            ?: "Indexing failed",
-                    )
+                    WorkInfo.State.FAILED -> {
+                        runningWorkId = null
+                        _state.value = _state.value.copy(
+                            indexing = false,
+                            indexStatus = null,
+                            error = info.outputData.getString(IndexWorker.KEY_ERROR)
+                                ?: "Indexing failed",
+                        )
+                    }
 
                     else -> Unit
                 }

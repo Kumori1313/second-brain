@@ -5,8 +5,11 @@ import android.util.Log
 import dev.loam.core.embed.Embedder
 import dev.loam.core.search.VectorIndex
 import dev.loam.core.store.LoamDatabase
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
 
 /**
  * Embeds a query with the same model used for indexing, then ranks stored
@@ -54,12 +57,48 @@ class SearchNotes(
     /** Call after indexing; the next search reloads from the store. */
     suspend fun invalidate() = mutex.withLock { cached = null }
 
+    /**
+     * Pays the first-query cost up front, off the critical path.
+     *
+     * Three things are lazy and only one of them is obvious: creating the ONNX
+     * session, reading every vector out of the encrypted store, and ONNX
+     * Runtime's own graph and arena setup, which happens on the first `run`
+     * rather than at session creation. Together they measured ~750 ms — enough
+     * that the first search after opening the app felt broken while every
+     * subsequent one took 12 ms.
+     *
+     * Safe to call repeatedly and safe to fail: a vault with no index yet, or a
+     * model that cannot be read, should degrade to a slow first search rather
+     * than take the app down at startup.
+     */
+    suspend fun warmUp(): Unit = withContext(Dispatchers.Default) {
+        val start = System.nanoTime()
+        try {
+            mutex.withLock {
+                val index = cached ?: load().also { cached = it }
+                val emb = embedder ?: embedderFactory().also { embedder = it }
+                // A short string warms the small bucket that real queries hit;
+                // warming at 256 would prime a shape searches never use.
+                emb.embed(WARMUP_TEXT)
+                Log.i(
+                    TAG,
+                    "warm chunks=${index.size} in %.0fms"
+                        .format((System.nanoTime() - start) / 1_000_000.0)
+                )
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Log.w(TAG, "warm-up skipped: ${e.message}")
+        }
+    }
+
     suspend fun search(
         query: String,
         limit: Int = 20,
         minScore: Float = DEFAULT_MIN_SCORE,
-    ): List<Result> {
-        if (query.isBlank()) return emptyList()
+    ): List<Result> = withContext(Dispatchers.Default) {
+        if (query.isBlank()) return@withContext emptyList()
 
         val embedStart = System.nanoTime()
         val (index, vector) = mutex.withLock {
@@ -68,7 +107,7 @@ class SearchNotes(
             idx to (if (idx.size == 0) FloatArray(0) else emb.embed(query))
         }
         val embedMs = (System.nanoTime() - embedStart) / 1_000_000.0
-        if (index.size == 0) return emptyList()
+        if (index.size == 0) return@withContext emptyList()
 
         val scanStart = System.nanoTime()
         val hits = index.search(vector, k = limit, minScore = minScore)
@@ -79,14 +118,14 @@ class SearchNotes(
             "query chunks=${index.size} embed=%.1fms scan=%.1fms hits=%d"
                 .format(embedMs, scanMs, hits.size)
         )
-        if (hits.isEmpty()) return emptyList()
+        if (hits.isEmpty()) return@withContext emptyList()
 
         val dao = LoamDatabase.get(context).dao()
         val byId = dao.chunksWithNotes(hits.map { it.chunkId }).associateBy { it.chunkId }
 
         // Re-apply the ranking: SQL `IN` gives no ordering guarantee, and
         // trusting it would quietly scramble relevance order.
-        return hits.mapNotNull { hit ->
+        hits.mapNotNull { hit ->
             byId[hit.chunkId]?.let { row ->
                 Result(
                     chunkId = row.chunkId,
@@ -134,5 +173,6 @@ class SearchNotes(
          */
         const val DEFAULT_MIN_SCORE = 0.35f
         private const val SNIPPET_CHARS = 320
+        private const val WARMUP_TEXT = "warm up the embedding session"
     }
 }
