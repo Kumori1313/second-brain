@@ -9,6 +9,7 @@ import dev.loam.core.store.ChunkEntity
 import dev.loam.core.store.LoamDatabase
 import dev.loam.core.store.NoteEntity
 import dev.loam.core.vault.Chunker
+import dev.loam.core.vault.TokenCounter
 import dev.loam.core.vault.VaultReader
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
@@ -27,6 +28,7 @@ import kotlinx.coroutines.ensureActive
 class IndexVault(
     private val context: Context,
     private val embedderFactory: () -> Embedder,
+    private val tokenCounter: TokenCounter,
 ) {
 
     sealed interface Progress {
@@ -122,7 +124,7 @@ class IndexVault(
                     t.readMs += (System.nanoTime() - readStart) / 1_000_000
 
                     val chunkStart = System.nanoTime()
-                    val chunks = Chunker.chunk(text)
+                    val chunks = Chunker.chunk(text, tokenCounter)
                     t.chunkMs += (System.nanoTime() - chunkStart) / 1_000_000
 
                     val entity = NoteEntity(

@@ -226,13 +226,28 @@ Padding is not perfectly neutral on the INT8 graph — the same text padded to i
 
 **The larger find was on the query path.** Measuring rather than assuming showed a search costing 331 ms of which only 17 ms was inference — the rest was constructing an ONNX session and re-parsing a 30,522-line vocabulary *per keystroke*. Caching one session for the process took warm queries to **12 ms**, a 27x improvement that dwarfs the optimization that exposed it. The first query still costs ~745 ms (session plus loading the index from the store); warming it during app start is an easy Phase 3 win.
 
-#### Chunks overflow the model's window — 14% of the vault is never embedded
+#### Chunks overflowed the model's window — fixed by sizing in tokens
 
-Measuring token lengths to size the buckets surfaced a correctness bug that matters more than any of the above. The chunker sizes by characters assuming ~4 per token; this vault measures **3.46**, because code, paths and URLs tokenize far denser than prose. So a 1,200-character target is ~350 tokens and the 2,000-character ceiling is ~580 — both past the model's 256-token window.
+Measuring token lengths to size the buckets surfaced a correctness bug that mattered more than any of the above. The chunker sized by characters assuming ~4 per token; this vault measures **3.46**, because code, paths and URLs tokenize far denser than prose. So a 1,200-character target was ~350 tokens and the 2,000-character ceiling ~580 — both past the model's 256-token window. **28.3% of chunks overflowed, and 14.4% of the vault's text was truncated away before ever reaching the embedder**: unsearchable while appearing indexed.
 
-On the 392-note vault: **28.3% of chunks exceed 256 tokens, and 14.4% of the vault's text is truncated away before it ever reaches the embedder.** Those passages are unsearchable while appearing indexed, which is the same silent-failure shape as the earlier `maxLen` truncation bug, one layer up.
+The chunker now budgets in tokens, counting through a `TokenCounter` so it stays independent of the embedding layer. Counts are additive across whitespace-joined blocks, so a growing chunk is never re-tokenized. Oversized blocks fall through progressively coarse-to-fine boundaries — paragraphs, lines, sentences, words, then a hard cut — because the pathological inputs are real (a table with no blank lines, a base64 blob with no spaces) and each finer level costs readability.
 
-The fix is to size chunks by real token count rather than a character proxy — the chunker already lives beside the tokenizer in `:core`, and tokenizing during chunking costs ~1 ms per chunk against ~99 ms to embed one. This also closes the CJK gap noted earlier, which is the same defect with a worse constant (~1 char/token).
+| | character-sized | token-sized |
+| --- | --- | --- |
+| chunks | 3,427 | 5,297 |
+| median / mean tokens | 195 / 223 | 154 / 156 |
+| chunks over the window | 28.3% | **0** |
+| vault text never embedded | 14.4% | **0.00%** |
+| full index | 358.1 s | 422.0 s |
+| embed per chunk | 98.7 ms | **75.1 ms** |
+
+Indexing costs 18% more wall clock because there are 55% more chunks, but per-chunk embedding got *cheaper* — smaller chunks fall into smaller buckets, so the two changes compound. Tokenizing during chunking costs 4.6 s of a 422 s run, about 1%, against the 14% of the vault it recovers. Retrieval is unchanged where it was already right: 0.69 on the virtual-machine query, 0.65 on LUKS, still "No good matches" for banana bread.
+
+`LoamDatabase` went to version 3, since moving chunk boundaries makes stored rows describe text that no longer corresponds to any current chunk.
+
+This also closes the CJK gap noted earlier — it was the same defect with a worse constant (~1 char/token), and a token budget is blind to script.
+
+Worth correcting in this document: the "~200–400 tokens" target above predates knowing MiniLM's window is 256, so the achievable range is really 64–254. Chunks average below the 240 target because whole blocks are packed rather than split mid-paragraph.
 
 ### Phase 2 — RAG Q&A
 - Integrate the chosen LLM runtime; GGUF model loading; a model download/picker flow (this is where INTERNET permission enters, scoped narrowly to "fetch model").

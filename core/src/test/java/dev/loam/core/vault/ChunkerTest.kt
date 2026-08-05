@@ -1,8 +1,10 @@
 package dev.loam.core.vault
 
+import dev.loam.core.embed.WordPieceTokenizer
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Assume.assumeTrue
+import org.junit.Before
 import org.junit.Test
 import java.io.File
 
@@ -13,6 +15,24 @@ import java.io.File
 class ChunkerTest {
 
     private val vault = File("../Documents/pensive")
+    private val vocabFile = File("../models/all-MiniLM-L6-v2/vocab.txt")
+
+    /**
+     * The real tokenizer, not a stand-in. Chunk sizing now depends on actual
+     * token counts, and the bug this replaced came precisely from trusting a
+     * cheap approximation of them.
+     */
+    private lateinit var counter: TokenCounter
+
+    @Before
+    fun setUp() {
+        assumeTrue(
+            "vocab.txt not found — download the model per the roadmap prerequisites",
+            vocabFile.exists(),
+        )
+        val tokenizer = WordPieceTokenizer.fromFile(vocabFile)
+        counter = TokenCounter { tokenizer.countTokens(it) }
+    }
 
     // --- rule 1: headings must not emit slivers -----------------------------
 
@@ -30,7 +50,7 @@ class ChunkerTest {
             Finally some actual body text that belongs to the deepest heading.
         """.trimIndent()
 
-        val chunks = Chunker.chunkText(md)
+        val chunks = Chunker.chunkText(md, counter)
 
         // Previously each heading flushed, yielding four chunks holding nothing
         // but a heading line. Headings with no body between them must coalesce.
@@ -43,7 +63,7 @@ class ChunkerTest {
         val body = "word ".repeat(120) // ~600 chars, comfortably over minChars
         val md = "# First\n\n$body\n\n# Second\n\n$body"
 
-        val chunks = Chunker.chunkText(md)
+        val chunks = Chunker.chunkText(md, counter)
 
         assertTrue("a heading past minChars should start a new chunk", chunks.size >= 2)
         assertTrue("second heading opens a chunk", chunks.any { it.trimStart().startsWith("# Second") })
@@ -57,12 +77,12 @@ class ChunkerTest {
         // real vault, which used to pass through as a single chunk and then be
         // silently truncated at embed time.
         val row = "| cell value here | another column | third column |\n"
-        val chunks = Chunker.chunkText(row.repeat(2000))
+        val chunks = Chunker.chunkText(row.repeat(2000), counter)
 
         assertTrue("must split into many chunks", chunks.size > 10)
         assertTrue(
-            "no chunk may exceed maxChars, got ${chunks.maxOf { it.length }}",
-            chunks.all { it.length <= Chunker.DEFAULT_MAX_CHARS },
+            "no chunk may exceed the model window, got ${chunks.maxOf { counter.count(it) }}",
+            chunks.all { counter.count(it) <= Chunker.DEFAULT_MAX_TOKENS - 2 },
         )
     }
 
@@ -70,12 +90,12 @@ class ChunkerTest {
     fun ceilingHoldsWithNoWhitespaceToBreakOn() {
         // Degenerate input: a single unbroken token far past the ceiling. The
         // splitter must fall back to a hard cut rather than loop or overflow.
-        val chunks = Chunker.chunkText("x".repeat(20_000))
+        val chunks = Chunker.chunkText("x".repeat(20_000), counter)
 
         assertTrue(chunks.isNotEmpty())
         assertTrue(
-            "hard cut must still respect the ceiling",
-            chunks.all { it.length <= Chunker.DEFAULT_MAX_CHARS },
+            "hard cut must still respect the window",
+            chunks.all { counter.count(it) <= Chunker.DEFAULT_MAX_TOKENS - 2 },
         )
         assertEquals("no content may be dropped", 20_000, chunks.sumOf { it.length })
     }
@@ -98,7 +118,7 @@ class ChunkerTest {
             Trailing paragraph.
         """.trimIndent()
 
-        val chunks = Chunker.chunkText(md)
+        val chunks = Chunker.chunkText(md, counter)
         val fenceChunk = chunks.single { it.contains("def one") }
 
         assertTrue(
@@ -112,7 +132,7 @@ class ChunkerTest {
         val body = "word ".repeat(120)
         val md = "$body\n\n```bash\n# this is a shell comment, not a heading\necho hi\n```"
 
-        val chunks = Chunker.chunkText(md)
+        val chunks = Chunker.chunkText(md, counter)
 
         assertEquals("a comment inside a fence must not break the chunk", 1, chunks.size)
     }
@@ -123,7 +143,7 @@ class ChunkerTest {
     fun overlapCarriesContextAcrossSizeBreak() {
         val md = (1..40).joinToString("\n\n") { "Paragraph number $it with enough words to add length." }
 
-        val chunks = Chunker.chunkText(md)
+        val chunks = Chunker.chunkText(md, counter)
         assumeTrue("needs at least two chunks to compare", chunks.size >= 2)
 
         val tailOfFirst = chunks[0].takeLast(60)
@@ -138,7 +158,7 @@ class ChunkerTest {
         val body = "word ".repeat(120)
         val md = "# First\n\n$body\n\n# Second\n\nmore text here"
 
-        val chunks = Chunker.chunkText(md)
+        val chunks = Chunker.chunkText(md, counter)
         val second = chunks.first { it.contains("# Second") }
 
         assertTrue(
@@ -166,7 +186,7 @@ class ChunkerTest {
             $body
         """.trimIndent()
 
-        val paths = Chunker.chunk(md).map { it.headingPath }
+        val paths = Chunker.chunk(md, counter).map { it.headingPath }
 
         assertTrue("expected a nested trail, got $paths",
             paths.any { it == "Arch Install > Networking > Static IP" })
@@ -179,7 +199,7 @@ class ChunkerTest {
         val body = "word ".repeat(120)
         val md = "# Top\n\n## First\n\n$body\n\n## Second\n\n$body"
 
-        val paths = Chunker.chunk(md).map { it.headingPath }
+        val paths = Chunker.chunk(md, counter).map { it.headingPath }
 
         assertTrue("a sibling must not nest under its sibling, got $paths",
             paths.none { it.contains("First > Second") })
@@ -189,7 +209,7 @@ class ChunkerTest {
     @Test
     fun chunkOrdinalsAreSequential() {
         val md = (1..40).joinToString("\n\n") { "Paragraph $it with enough words to add real length here." }
-        val ordinals = Chunker.chunk(md).map { it.ordinal }
+        val ordinals = Chunker.chunk(md, counter).map { it.ordinal }
         assertEquals(ordinals.indices.toList(), ordinals)
     }
 
@@ -197,13 +217,13 @@ class ChunkerTest {
 
     @Test
     fun emptyInputProducesNoChunks() {
-        assertTrue(Chunker.chunk("").isEmpty())
-        assertTrue(Chunker.chunk("   \n\n  \t \n").isEmpty())
+        assertTrue(Chunker.chunk("", counter).isEmpty())
+        assertTrue(Chunker.chunk("   \n\n  \t \n", counter).isEmpty())
     }
 
     @Test
     fun shortDocumentStaysWhole() {
-        val chunks = Chunker.chunkText("# Note\n\nOne short paragraph.")
+        val chunks = Chunker.chunkText("# Note\n\nOne short paragraph.", counter)
         assertEquals(1, chunks.size)
     }
 
@@ -214,7 +234,7 @@ class ChunkerTest {
      * confirm the rules fire; only real notes show what they add up to.
      */
     @Test
-    fun realVaultProducesRetrievableChunkSizes() {
+    fun realVaultChunksAllFitTheModelWindow() {
         assumeTrue(
             "test vault absent at ${vault.absolutePath} — see .gitignore for the clone command",
             vault.isDirectory,
@@ -226,27 +246,50 @@ class ChunkerTest {
             .filter { it.isFile && it.extension.equals("md", ignoreCase = true) }
             .forEach { f ->
                 files++
-                sizes += Chunker.chunkText(f.readText()).map { it.length }
+                sizes += Chunker.chunkText(f.readText(), counter).map { counter.count(it) }
             }
 
         assumeTrue("vault has no markdown", sizes.isNotEmpty())
 
-        val mean = sizes.average()
-        val tiny = sizes.count { it < 200 }
-        val tinyPct = 100.0 * tiny / sizes.size
+        val budget = Chunker.DEFAULT_MAX_TOKENS - 2
+        val over = sizes.count { it > budget }
+        val tiny = sizes.count { it < 16 }
         println(
-            "vault: $files files, ${sizes.size} chunks, mean ${"%.0f".format(mean)} chars " +
-                "(~${"%.0f".format(mean / 4)} tokens), ${"%.1f".format(tinyPct)}% under 200, " +
-                "max ${sizes.max()}"
+            "vault: $files files, ${sizes.size} chunks, " +
+                "median ${sizes.sorted()[sizes.size / 2]} tokens, " +
+                "mean ${"%.0f".format(sizes.average())}, max ${sizes.max()}, " +
+                "over budget $over, tiny $tiny"
         )
 
-        assertTrue(
-            "no chunk may exceed the ceiling, got ${sizes.max()}",
-            sizes.max() <= Chunker.DEFAULT_MAX_CHARS,
-        )
-        // 200-400 tokens at ~4 chars/token; allow a wide band so this asserts
-        // the shape of the distribution, not one exact tuning.
-        assertTrue("mean $mean chars is outside the useful band", mean in 600.0..1600.0)
-        assertTrue("$tinyPct% of chunks are too small to retrieve well", tinyPct < 10.0)
+        // The bug this test exists for: chunks used to be sized by characters
+        // at an assumed ~4 chars/token, but this vault measures 3.46, so 28% of
+        // chunks overflowed the window and 14% of the vault's text was silently
+        // truncated before reaching the model.
+        assertEquals("chunks must never exceed the model window", 0, over)
+        assertTrue("chunks should still be substantial, mean was ${sizes.average()}",
+            sizes.average() > 100)
+    }
+
+    @Test
+    fun realVaultLosesNoTextToTruncation() {
+        assumeTrue("test vault absent", vault.isDirectory)
+
+        var embeddable = 0L
+        var total = 0L
+        val budget = Chunker.DEFAULT_MAX_TOKENS - 2
+        vault.walkTopDown()
+            .filter { it.isFile && it.extension.equals("md", ignoreCase = true) }
+            .forEach { f ->
+                Chunker.chunkText(f.readText(), counter).forEach { c ->
+                    val n = counter.count(c)
+                    total += n
+                    embeddable += minOf(n, budget)
+                }
+            }
+
+        assumeTrue("vault has no text", total > 0)
+        val lost = 100.0 * (total - embeddable) / total
+        println("tokens: $total, reaching the model: $embeddable (${"%.2f".format(lost)}% lost)")
+        assertEquals("no text may be truncated away", 0L, total - embeddable)
     }
 }

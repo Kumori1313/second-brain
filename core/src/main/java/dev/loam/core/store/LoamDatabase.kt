@@ -15,10 +15,14 @@ import net.zetetic.database.sqlcipher.SupportOpenHelperFactory
  * v2: inputs are padded to a 32-token bucket instead of a flat 256. Embeddings
  * are not perfectly padding-invariant on the INT8 graph, so v1 vectors would be
  * subtly mismatched against v2 queries.
+ *
+ * v3: chunks are sized by token count rather than by a characters-per-token
+ * guess, so chunk boundaries moved and v2 rows describe text that no longer
+ * corresponds to any current chunk.
  */
 @Database(
     entities = [NoteEntity::class, ChunkEntity::class],
-    version = 2,
+    version = 3,
     exportSchema = true,
 )
 abstract class LoamDatabase : RoomDatabase() {

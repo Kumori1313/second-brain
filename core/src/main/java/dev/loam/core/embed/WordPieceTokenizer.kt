@@ -50,6 +50,24 @@ class WordPieceTokenizer private constructor(private val vocab: Map<String, Int>
     )
 
     /**
+     * WordPiece token count for [text], excluding `[CLS]`/`[SEP]`.
+     *
+     * Exists so the chunker can size chunks by what the model will actually
+     * receive rather than by a characters-per-token guess. Counts are additive
+     * across whitespace-joined fragments — WordPiece splits on whitespace
+     * first — so a caller can total per-block counts instead of re-tokenizing
+     * a growing chunk on every append.
+     *
+     * Untruncated by design: the whole point is to discover that a passage is
+     * too long, which a capped count would hide.
+     */
+    fun countTokens(text: String): Int {
+        var count = 0
+        for (word in basicTokenize(text)) count += wordPiece(word).size
+        return count
+    }
+
+    /**
      * Token ids with `[CLS]`/`[SEP]`, truncated to [maxLen]. Unpadded, so the
      * caller can decide how far to pad — see [pad].
      */

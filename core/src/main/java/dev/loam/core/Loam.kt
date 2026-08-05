@@ -7,6 +7,7 @@ import dev.loam.core.domain.SearchNotes
 import dev.loam.core.domain.VaultLocation
 import dev.loam.core.embed.Embedder
 import dev.loam.core.embed.WordPieceTokenizer
+import dev.loam.core.vault.TokenCounter
 import java.io.File
 
 /**
@@ -17,8 +18,20 @@ class Loam private constructor(private val context: Context) {
 
     val vaultLocation by lazy { VaultLocation(context) }
     val indexStats by lazy { IndexStats(context) }
-    val indexVault by lazy { IndexVault(context, ::newEmbedder) }
+    val indexVault by lazy { IndexVault(context, ::newEmbedder, tokenCounter) }
     val searchNotes by lazy { SearchNotes(context, ::newEmbedder) }
+
+    /**
+     * One tokenizer for the process. Parsing the 30,522-line vocabulary is not
+     * free, and it was previously repeated per embedder — measurable on the
+     * search path, where it dominated a 331 ms query.
+     */
+    private val tokenizer: WordPieceTokenizer by lazy {
+        WordPieceTokenizer.fromFile(stagedAsset(VOCAB_ASSET))
+    }
+
+    /** Lets the chunker size chunks by what the model will actually receive. */
+    val tokenCounter = TokenCounter { tokenizer.countTokens(it) }
 
     /**
      * A fresh ORT session per operation.
@@ -27,11 +40,7 @@ class Loam private constructor(private val context: Context) {
      * and indexing and searching can overlap. Cold start measured 35 ms, which
      * is cheap next to the work either operation goes on to do.
      */
-    private fun newEmbedder(): Embedder {
-        val model = stagedAsset(MODEL_ASSET)
-        val vocab = stagedAsset(VOCAB_ASSET)
-        return Embedder(model, WordPieceTokenizer.fromFile(vocab))
-    }
+    private fun newEmbedder(): Embedder = Embedder(stagedAsset(MODEL_ASSET), tokenizer)
 
     /**
      * Copies a bundled asset into files/ on first use.
