@@ -43,6 +43,23 @@
         android:name="android.permission.ACCESS_NETWORK_STATE"
         tools:node="remove" />
 
+    <!--
+      Lets Loam list the apps that can display a note, so the user can pin one
+      and stop being asked on every result. Package visibility is filtered to
+      exactly that: apps advertising they can VIEW text. Loam cannot see, and
+      has no reason to see, anything else installed.
+
+      Deliberately not QUERY_ALL_PACKAGES. That would work, but it is a
+      permission, it appears in the F-Droid listing, and it is far broader than
+      the question being asked.
+    -->
+    <queries>
+        <intent>
+            <action android:name="android.intent.action.VIEW" />
+            <data android:mimeType="text/*" />
+        </intent>
+    </queries>
+
     <application
         android:allowBackup="false"
         android:icon="@mipmap/ic_launcher"

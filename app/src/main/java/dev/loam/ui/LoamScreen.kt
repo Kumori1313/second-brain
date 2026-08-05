@@ -1,12 +1,14 @@
 package dev.loam.ui
 
-import android.content.Intent
+import android.content.ComponentName
 import android.net.Uri
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -15,9 +17,11 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CircularProgressIndicator
@@ -25,11 +29,15 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
@@ -47,6 +55,21 @@ fun LoamScreen(viewModel: SearchViewModel) {
     val pickVault = rememberLauncherForActivityResult(
         ActivityResultContracts.OpenDocumentTree()
     ) { uri: Uri? -> uri?.let(viewModel::onVaultPicked) }
+
+    val opener = remember { NoteOpener(context) }
+    var showOpenWith by remember { mutableStateOf(false) }
+
+    if (showOpenWith) {
+        OpenWithDialog(
+            handlers = remember { opener.handlers() },
+            selected = opener.preferred,
+            onSelect = { component ->
+                opener.preferred = component
+                showOpenWith = false
+            },
+            onDismiss = { showOpenWith = false },
+        )
+    }
 
     Scaffold { padding ->
         Column(
@@ -103,7 +126,11 @@ fun LoamScreen(viewModel: SearchViewModel) {
                     contentPadding = androidx.compose.foundation.layout.PaddingValues(vertical = 12.dp),
                 ) {
                     items(state.results, key = { it.chunkId }) { result ->
-                        ResultCard(result) { openInExternalApp(context, result) }
+                        ResultCard(
+                            result = result,
+                            onClick = { openNote(context, opener, result) },
+                            onLongClick = { showOpenWith = true },
+                        )
                     }
                 }
             }
@@ -168,12 +195,17 @@ private fun IndexStatusBar(
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun ResultCard(result: SearchNotes.Result, onClick: () -> Unit) {
+private fun ResultCard(
+    result: SearchNotes.Result,
+    onClick: () -> Unit,
+    onLongClick: () -> Unit,
+) {
     Card(
         modifier = Modifier
             .fillMaxWidth()
-            .clickable(onClick = onClick),
+            .combinedClickable(onClick = onClick, onLongClick = onLongClick),
         shape = RoundedCornerShape(12.dp),
     ) {
         Column(Modifier.padding(12.dp)) {
@@ -226,51 +258,95 @@ private fun Centered(content: @Composable () -> Unit) {
 }
 
 /**
- * Opens the real `.md` file in whatever app the user already uses.
- *
- * Loam is explicitly not a note editor — it points at the user's own files and
- * hands off. Read-only grant, since it has no business writing to the vault.
+ * Lets the user pin one app to open notes with, since the system's own default
+ * does not hold — see [NoteOpener] for what was measured and why.
  */
-private fun openInExternalApp(context: android.content.Context, result: SearchNotes.Result) {
-    // text/markdown first so a real markdown app wins the chooser, falling back
-    // to text/plain because plenty of devices register the latter only.
-    //
-    // A plain ACTION_VIEW rather than Intent.createChooser, because
-    // createChooser forces the picker on every single open. Plain ACTION_VIEW
-    // at least *allows* the system default to apply.
-    //
-    // Whether it actually applies is out of our hands, and on a real device it
-    // often does not. Measured on a Pixel 8a (Android 17): "Always" writes a
-    // preferred activity built from the MIME type alone, but the system
-    // re-resolves using the full intent including the content URI, which admits
-    // extra scheme-matching activities (a file manager's "Save as" here). The
-    // recorded set never matches the launch-time set, so the stored default is
-    // silently ignored and the picker returns every time. Reproducible from adb
-    // with no Loam involved, so nothing about this intent is the cause.
-    //
-    // If that friction is worth removing, the fix is Loam remembering the
-    // chosen app itself and calling setPackage() — not more intent tweaking.
-    //
-    // Read-only grant. Loam is not a note editor and has no business writing to
-    // the vault, so the editor that opens gets exactly what it needs to display
-    // the file and nothing more.
-    val opened = listOf("text/markdown", "text/plain").any { mime ->
-        runCatching {
-            context.startActivity(
-                Intent(Intent.ACTION_VIEW).apply {
-                    setDataAndType(Uri.parse(result.uri), mime)
-                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+@Composable
+private fun OpenWithDialog(
+    handlers: List<NoteOpener.Handler>,
+    selected: ComponentName?,
+    onSelect: (ComponentName?) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Open notes with") },
+        text = {
+            Column {
+                Text(
+                    "Applies to every result. Android's own \"Always\" is " +
+                        "ignored on some devices, so Loam remembers it here.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Spacer(Modifier.height(12.dp))
+                // Null first: whatever is pinned, un-pinning it must always be
+                // reachable, including when the pinned app is missing from the
+                // list because it was uninstalled.
+                HandlerRow("Ask every time", null, selected == null) { onSelect(null) }
+                handlers.forEach { handler ->
+                    HandlerRow(handler.label, handler.detail, selected == handler.component) {
+                        onSelect(handler.component)
+                    }
                 }
-            )
-        }.isSuccess
+            }
+        },
+        confirmButton = { TextButton(onClick = onDismiss) { Text("Close") } },
+    )
+}
+
+@Composable
+private fun HandlerRow(
+    label: String,
+    detail: String?,
+    selected: Boolean,
+    onClick: () -> Unit,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick)
+            .padding(vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        RadioButton(selected = selected, onClick = onClick)
+        Spacer(Modifier.width(8.dp))
+        Column {
+            Text(label, style = MaterialTheme.typography.bodyMedium)
+            if (detail != null) {
+                Text(
+                    detail,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
     }
-    if (!opened) {
+}
+
+private fun openNote(
+    context: android.content.Context,
+    opener: NoteOpener,
+    result: SearchNotes.Result,
+) {
+    if (!opener.open(context, result.uri)) {
         // Previously this failed silently: on a device with no text viewer,
         // tapping a result did nothing at all and looked like a broken app
         // rather than a missing one.
         Toast.makeText(
             context,
             "No app installed that can open ${result.displayName}",
+            Toast.LENGTH_LONG,
+        ).show()
+        return
+    }
+    // Long-press is the conventional place for per-item options but it is
+    // invisible, and the picker is exactly the moment the user is wondering how
+    // to stop seeing it. Said once, then never again.
+    if (opener.consumeFirstOpenHint()) {
+        Toast.makeText(
+            context,
+            "Tip: long-press a result to always open notes in one app",
             Toast.LENGTH_LONG,
         ).show()
     }
