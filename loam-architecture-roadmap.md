@@ -166,9 +166,11 @@ Full-index estimate for this vault: ~3,300 chunks × ~25 ms ≈ 80 s of embeddin
 - Brute-force cosine similarity search; manual + periodic reindex.
 - **Exit criteria:** point it at your real notes, ask "did I ever write about X," get correct, meaning-based hits — with zero network permission anywhere in the manifest.
 
-#### Phase 1 status — exit criteria met, verified on device
+#### Phase 1 status — functionally complete, exit criteria only partly met
 
-Built as a two-module Gradle build at the repo root (`:app` Compose UI, `:core` domain/data); `spike/` stays a separate build until deleted. Indexed the 392-note test vault on a Pixel 8a: **3,427 chunks in 397 s**, then searched it.
+Built as a two-module Gradle build at the repo root (`:app` Compose UI, `:core` domain/data); `spike/` stays a separate build until deleted. Indexed a 392-note vault on a Pixel 8a — **3,427 chunks in 397 s** on the first run, later **5,297 chunks in 151 s** once chunking and concurrency were fixed — then searched it.
+
+**The exit criteria say *your real notes*, and that part is not done.** Every measurement in this document is against `dusklinux/dusky`, the public MIT vault the `.gitignore` documents cloning. That is unusually well-behaved test data: coherent technical documentation, uniform register, dense Linux vocabulary, consistent heading structure. Several tuned constants are calibrated to exactly that character and should be expected to move on a real vault — `DEFAULT_MIN_SCORE = 0.35`, `DEFAULT_MIN_TOKENS = 64`, and the 3.46 chars/token ratio behind the truncation fix. Retrieval demonstrably works; whether it works *on the notes this app exists to search* is untested.
 
 | Query | Top hit | Score |
 | --- | --- | --- |
@@ -182,18 +184,18 @@ None of those queries share vocabulary with the notes they found, which is the p
 
 Two findings worth carrying into Phase 3:
 
-- **Indexing ran at ~116 ms/chunk against the 23–36 ms the spike measured.** This was investigated rather than left as a guess; see "Why indexing is slower than the spike suggested" below. The thread-priority hypothesis was wrong.
-- **The relevance threshold has to be calibrated against real chunks, not sentences.** An initial 0.35 came from the spike's sentence-to-sentence scores (0.250 related vs 0.062 unrelated) and was far too low: chunks are long, so they carry a bit of everything and score moderately against any query. The banana-bread query returned confident-looking Linux notes at 0.19 until it was recalibrated against the measured spread.
+- **Indexing appeared to run at ~116 ms/chunk against the 23–36 ms the spike measured — and the gap was self-inflicted.** Two indexers were racing each other. See "Why indexing looked slower than the spike suggested" below; the thread-priority and thermal explanations were both investigated first, and both were wrong about the magnitude.
+- **The relevance threshold has to be calibrated against real chunks, not sentences.** An initial 0.35 came from the spike's sentence-to-sentence scores (0.250 related vs 0.062 unrelated) and was far too low: chunks are long, so they carry a bit of everything and score moderately against any query. The banana-bread query returned confident-looking Linux notes at 0.19 until it was recalibrated against the measured spread. A later probe showed the cut is not free in the other direction either — a planted note on espresso scored 0.72 for a direct query but *under* 0.35 for "why is my shot running too fast", which it answers outright, while an unrelated Btrfs chunk cleared the bar at 0.36. 0.35 is a floor tuned to one corpus, not a constant.
 
 Not yet done in Phase 1: no settings screen (chunk size, model choice, exclude patterns are all Phase 3), no biometric gate on the database key, and the index is loaded into heap whole — fine at 3,427 chunks, worth revisiting well before 50k.
 
-#### Why indexing is slower than the spike suggested
+#### Why indexing looked slower than the spike suggested
 
-Stage timings were added to `IndexVault` and two full re-indexes run on the Pixel 8a with CPU frequency and thermal status sampled alongside. Results, in order of how much they matter:
+Three explanations were investigated in order. The first two were wrong, and the third invalidates most of the numbers the first two were reasoning about.
 
-**Embedding is 95% of the work.** Of a 420 s run: `embed=399 s`, `read=12.3 s`, `store=4.7 s`, `walk=1.7 s`, `chunk=0.1 s`. Worth noting the walk is now **1.7 s, down from the spike's 13.5 s** — that is the `DocumentsContract` rewrite paying off ~8x. Enumeration is no longer a cost worth optimizing.
+**The thread-priority hypothesis was wrong.** `CoroutineWorker.doWork` runs on `Dispatchers.Default`, not WorkManager's background executor: the logged thread is `DefaultDispatcher-worker-N` at `prio=0` (default), never the background priority that would confine it to little cores. There was nothing to fix.
 
-**Thermal throttling is real and accounts for the within-run degradation.** Sampling the big core during a run:
+**Thermal throttling is real, but it was a symptom.** Sampling the big core during a run:
 
 | elapsed | CPU8 clock | thermal status | ms/chunk |
 | --- | --- | --- | --- |
@@ -202,13 +204,32 @@ Stage timings were added to `IndexVault` and two full re-indexes run on the Pixe
 | 90 s | 1.89 GHz | 1 | 126.8 |
 | 130 s | 1.16 GHz | 1 | 135.3 |
 
-The clock falls 2.5x and `Thermal Status` flips to 1. A second run started on an already-warm device averaged 130 ms/chunk against 116 ms/chunk from cool. Reading thermal status *after* a run shows 0 and is misleading — it has to be sampled during.
+The clock falls 2.5x and `Thermal Status` flips to 1. All of that is accurate — but it describes a device being driven twice as hard as the work required. Thermal status has to be sampled *during* a run; reading it afterwards shows 0 and misleads.
 
-**The thread-priority hypothesis was wrong.** `CoroutineWorker.doWork` runs on `Dispatchers.Default`, not WorkManager's background executor: the logged thread is `DefaultDispatcher-worker-N` at `prio=0` (default), never the background priority that would confine it to little cores. There was nothing to fix.
+**The actual cause: Loam was indexing the vault twice at once.** `onVaultPicked` calls `reindex()` *and* `schedulePeriodic()`, and WorkManager runs a newly-enqueued periodic immediately rather than waiting out its first interval. `UNIQUE_MANUAL` and `UNIQUE_PERIODIC` are separate unique names, so nothing stopped both. Every vault pick started two indexers that walked the same tree, saw the same notes as stale against the same fingerprints, and embedded overlapping work while contending for cores.
 
-**Tokenization is not the cost either** — 0.6–1.1 ms per chunk against 81–100 ms for inference, so the hand-rolled WordPiece is not worth optimizing.
+It was caught by noticing the progress log interleaving two different totals:
 
-**The spike's 23–36 ms was a burst measurement, not a sustained one.** Even cool, at 2.36 GHz, with tokenization excluded, inference alone is ~83 ms per chunk. The spike timed three embeddings on an idle device at full boost with no database, no UI recomposition, and no concurrent work; ONNX Runtime is multi-threaded and therefore highly sensitive to core availability. The number was never wrong, it just could not describe sustained load — the same lesson the `debuggable` build taught in Phase 0, in a different costume. **Take on-device performance numbers from a run shaped like the real workload.**
+```
+window notes=225/393 …  ms/chunk=22.7      ← pass A
+window notes=25/167  …  ms/chunk=78.1      ← pass B
+window notes=350/393 …  ms/chunk=112.9
+```
+
+Same vault, same device, ten minutes apart:
+
+| | ms/chunk | full index |
+| --- | --- | --- |
+| Two passes | 112.9 | ~420 s |
+| One pass (guarded) | **24.1** | **151 s** |
+
+`IndexVault` now holds a mutex for the duration of a pass and returns null rather than starting a second one; a skipped run is reported distinctly, because "indexed zero notes" and "did not look" are not the same claim.
+
+**So the spike's 23–36 ms was right all along.** The conclusion previously recorded here — that it was a burst measurement incapable of describing sustained load — was itself wrong: 24.1 ms/chunk held across a full 393-note index on an already-warm device. The irony is worth preserving rather than editing away. A section arguing that performance numbers must come from a run shaped like the real workload was itself reasoning from a contaminated run. **A measurement taken from the real workload is only as good as your understanding of what that workload is actually doing.**
+
+**Embedding is 95% of the work, and enumeration is not worth optimizing.** Of the 151 s run: `embed=128 s`, `read=11.3 s`, `store=4.8 s`, `chunk=4.0 s`, `walk=1.5 s`. The walk is down from the spike's 13.5 s — the `DocumentsContract` rewrite paying off ~9x.
+
+**Tokenization is not the cost either** — 0.3–0.9 ms per chunk against ~20 ms for inference, so the hand-rolled WordPiece is not worth optimizing.
 
 #### Dynamic sequence length — done, and what it uncovered
 
@@ -253,6 +274,37 @@ This also closes the CJK gap noted earlier — it was the same defect with a wor
 
 Worth correcting in this document: the "~200–400 tokens" target above predates knowing MiniLM's window is 256, so the achievable range is really 64–254. Chunks average below the 240 target because whole blocks are packed rather than split mid-paragraph.
 
+**Every absolute indexing timing in this section and in "Dynamic sequence length" above was measured before the concurrent-indexer bug was found, so all of them are inflated by roughly 4x** — 116.4, 98.7 and 75.1 ms/chunk, and the 358 s and 422 s full-index runs. The *comparisons* still hold, since each pair was measured the same way and the contention applied to both sides, which is why those optimizations were real. But the absolute numbers describe two indexers contending, not the cost of the work. The corrected figure for a full index is **5,297 chunks at 24.1 ms/chunk in 151 s**.
+
+#### Periodic reindex — verified end to end
+
+Claimed since Phase 1 and never actually exercised. Now verified on a Pixel 8a against a temporarily shortened interval:
+
+| | |
+| --- | --- |
+| Registers with JobScheduler | ✅ `BATTERY_NOT_LOW`, no network constraint |
+| Runs unforced | ✅ |
+| Detects changes incrementally | ✅ `notes=1` for one edited note; `notes=50` for fifty touched |
+| Recurs on its own interval | ✅ 19:05:17 → 19:20:39 |
+| Re-arms after each run | ✅ job 11 → 12 → 13 |
+| Skips when a pass is already running | ✅ |
+
+Three things make this awkward to test, and all three initially looked like failures:
+
+- **`cmd jobscheduler run -f` cannot drive it.** WorkManager tracks the period itself and refuses with *"executed before schedule"*. The job appears to run and silently does nothing.
+- **`am force-stop` deregisters the job entirely** until the app is next opened — so force-stopping Loam pauses background reindexing.
+- **`adb logcat` replays its buffer**, so a naive `grep -m1` matches a stale line and exits immediately. Anchor with `-T`. This is the same shape as the WorkManager terminal-state replay above: old state read as current.
+
+`schedulePeriodic` was also reachable only from `onVaultPicked`. The vault URI lives in SharedPreferences and the schedule lives in WorkManager's database; those stores can diverge — cleared data, a partial restore — leaving a valid vault with no schedule and nothing that would ever put one back, while search carries on against an index that has quietly stopped updating. It is now re-asserted on every app start, which is safe only because the policy is `KEEP`. `UPDATE` would restart the period on each call, so anyone opening Loam more often than the interval would reset the clock forever.
+
+Not yet surfaced: the ViewModel observes only `UNIQUE_MANUAL`, so a periodic pass shows no progress in the UI and leaves the Reindex button live.
+
+#### Opening a note — the system default does not hold
+
+Results hand off with a plain `ACTION_VIEW`, on the assumption the user sets a system default so the picker appears once. On a Pixel 8a running Android 17 they cannot. Android records the preferred activity from the **MIME type alone**, then re-resolves using the full intent **including the content URI**, which admits activities matching only on scheme — a file manager's "Save as" here. Querying by type returns 3 candidates; the same query with the URI returns 4. The sets never agree, the stored default is discarded, and the picker returns on every note. Reproducible from adb with no Loam in the path, with and without `FLAG_GRANT_READ_URI_PERMISSION` and for both MIME types.
+
+Loam therefore remembers the choice itself: long-press a result to pin an app. Stored as a `ComponentName` rather than a package, because one package can own several matching activities — Material Files ships both a text viewer and a "Save as", so `setPackage` would have replaced the system picker with a smaller one. An explicit component bypasses resolution entirely, so it cannot be perturbed by whatever else is installed. Package visibility comes from a `<queries>` element scoped to `VIEW text/*`, **not** `QUERY_ALL_PACKAGES`, which would be a permission on the F-Droid listing for a far broader question than the one being asked.
+
 ### Phase 2 — RAG Q&A
 - Integrate the chosen LLM runtime; GGUF model loading; a model download/picker flow (this is where INTERNET permission enters, scoped narrowly to "fetch model").
 - Build retrieve-then-generate; the "sources used" panel.
@@ -263,7 +315,9 @@ Worth correcting in this document: the "~200–400 tokens" target above predates
 - Paginated/streamed indexing so a large vault doesn't freeze the UI on first run.
 - Settings: model choice, quantization level, chunk size, folder exclude-patterns.
 - Share-sheet integration; consider a home-screen search widget.
-- Battery/thermal testing under a full-vault first index — this is the real stress test.
+- Surface periodic runs in the UI. The ViewModel observes only `UNIQUE_MANUAL`, so a background pass is invisible and the Reindex button stays live during one.
+- Recalibrate `DEFAULT_MIN_SCORE` against a real vault, and consider showing near-threshold hits behind a "show weak matches" affordance rather than discarding them outright.
+- Battery/thermal testing under a full-vault first index — this is the real stress test, and worth redoing now that it is not measuring two indexers at once.
 - **Exit criteria:** daily-driver comfortable — you reach for it instead of manual grep.
 
 ### Phase 4 — F-Droid packaging & release
@@ -279,9 +333,11 @@ Worth correcting in this document: the "~200–400 tokens" target above predates
 
 ## Risks & open questions
 
+- **Everything so far is tuned to one atypical corpus.** The whole project has been measured against a single vault of coherent technical documentation. The relevance floor, the minimum chunk size, and the characters-per-token assumption are all fitted to it, and a real vault of short captures, daily notes, or mixed scripts is the first thing likely to break them. Pointing Loam at real notes is the outstanding Phase 1 exit criterion and the highest-value next measurement.
 - **Small-model hallucination survives RAG.** Grounding reduces it, doesn't eliminate it — the "sources used" panel is doing real work here, not decoration.
 - **SAF has no true background filesystem watch.** Periodic + manual reindex is the honest architecture, not a stopgap.
 - **First index of a large, long-lived vault will be slow and battery-heavy.** Needs a visible progress state; shouldn't run silently in the background on first launch.
+- **Recurring lesson, now four for four: a measurement is only as good as your model of what produced it.** A debug build inflated cosine search 36x; characters stood in for tokens and hid 14% of the vault; a burst of three embeddings stood in for sustained load; and two concurrent indexers stood in for one, inflating every indexing figure by 4x and inviting a thermal explanation for a contention problem. Each was caught only by measuring the thing itself rather than a proxy for it.
 - **Model licensing shapes your F-Droid listing.** Decide the EmbeddingGemma/MiniLM (and any LLM model) question with the anti-feature consequences in mind, not after the fact.
 
 ## Prior art & references
