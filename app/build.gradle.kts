@@ -84,7 +84,10 @@ abstract class BundleModel : DefaultTask() {
 
 val modelDir = rootProject.layout.projectDirectory.dir("models/all-MiniLM-L6-v2")
 
-val bundleModel by tasks.registering(BundleModel::class) {
+// `by tasks.registering(T::class)` rather than this was deprecated in Gradle 9
+// and is removed in Gradle 10. Since this task is what puts the embedding model
+// into the APK, that would have broken the build outright rather than warned.
+val bundleModel = tasks.register<BundleModel>("bundleModel") {
     description = "Copies the embedding model into the APK's assets."
     sourceDir.set(modelDir)
     modelFiles.setFrom(BundleModel.REQUIRED.map { modelDir.file(it) })
