@@ -166,11 +166,13 @@ Full-index estimate for this vault: ~3,300 chunks × ~25 ms ≈ 80 s of embeddin
 - Brute-force cosine similarity search; manual + periodic reindex.
 - **Exit criteria:** point it at your real notes, ask "did I ever write about X," get correct, meaning-based hits — with zero network permission anywhere in the manifest.
 
-#### Phase 1 status — functionally complete, exit criteria only partly met
+#### Phase 1 status — exit criteria met, verified on device
 
-Built as a two-module Gradle build at the repo root (`:app` Compose UI, `:core` domain/data); `spike/` stays a separate build until deleted. Indexed a 392-note vault on a Pixel 8a — **3,427 chunks in 397 s** on the first run, later **5,297 chunks in 151 s** once chunking and concurrency were fixed — then searched it.
+Built as a two-module Gradle build at the repo root (`:app` Compose UI, `:core` domain/data); `spike/` stays a separate build until deleted. Indexed the 392-note vault on a Pixel 8a — **3,427 chunks in 397 s** on the first run, later **5,297 chunks in 151 s** once chunking and concurrency were fixed — then searched it.
 
-**The exit criteria say *your real notes*, and that part is not done.** Every measurement in this document is against `dusklinux/dusky`, the public MIT vault the `.gitignore` documents cloning. That is unusually well-behaved test data: coherent technical documentation, uniform register, dense Linux vocabulary, consistent heading structure. Several tuned constants are calibrated to exactly that character and should be expected to move on a real vault — `DEFAULT_MIN_SCORE = 0.35`, `DEFAULT_MIN_TOKENS = 64`, and the 3.46 chars/token ratio behind the truncation fix. Retrieval demonstrably works; whether it works *on the notes this app exists to search* is untested.
+**These are real notes.** The vault is the author's own Obsidian vault at `Documents/pensive`, `.obsidian` config and all — not a fixture. A previous revision of this section claimed the opposite and marked the exit criteria unmet; that was read off a stale `.gitignore` comment about cloning a public vault, without checking whether the directory matched it. It did not.
+
+One narrower caveat does survive. **97% of the vault — 379 of 392 notes — sits under `linux/`**, so it is topically concentrated technical documentation in a uniform register. The constants fitted against it are therefore correctly tuned for *this* vault, which is the whole point of a personal tool: `DEFAULT_MIN_SCORE = 0.35`, `DEFAULT_MIN_TOKENS = 64`, and the 3.46 chars/token ratio behind the truncation fix. They should not be assumed to transfer to a vault of short captures, daily journals, or non-Latin scripts — which matters only once Loam is distributed to anyone else.
 
 | Query | Top hit | Score |
 | --- | --- | --- |
@@ -333,11 +335,11 @@ Loam therefore remembers the choice itself: long-press a result to pin an app. S
 
 ## Risks & open questions
 
-- **Everything so far is tuned to one atypical corpus.** The whole project has been measured against a single vault of coherent technical documentation. The relevance floor, the minimum chunk size, and the characters-per-token assumption are all fitted to it, and a real vault of short captures, daily notes, or mixed scripts is the first thing likely to break them. Pointing Loam at real notes is the outstanding Phase 1 exit criterion and the highest-value next measurement.
+- **Everything so far is tuned to one topically narrow corpus.** The vault is real, but 97% of it is Linux documentation in a uniform register. The relevance floor, the minimum chunk size, and the characters-per-token assumption are all fitted to that, which is correct for a personal tool and a liability the moment anyone else installs it. A vault of short captures, daily journals, or mixed scripts is the first thing likely to break them.
 - **Small-model hallucination survives RAG.** Grounding reduces it, doesn't eliminate it — the "sources used" panel is doing real work here, not decoration.
 - **SAF has no true background filesystem watch.** Periodic + manual reindex is the honest architecture, not a stopgap.
 - **First index of a large, long-lived vault will be slow and battery-heavy.** Needs a visible progress state; shouldn't run silently in the background on first launch.
-- **Recurring lesson, now four for four: a measurement is only as good as your model of what produced it.** A debug build inflated cosine search 36x; characters stood in for tokens and hid 14% of the vault; a burst of three embeddings stood in for sustained load; and two concurrent indexers stood in for one, inflating every indexing figure by 4x and inviting a thermal explanation for a contention problem. Each was caught only by measuring the thing itself rather than a proxy for it.
+- **Recurring lesson, now five for five: a claim is only as good as your model of what produced it.** A debug build inflated cosine search 36x; characters stood in for tokens and hid 14% of the vault; a burst of three embeddings stood in for sustained load; two concurrent indexers stood in for one, inflating every indexing figure by 4x and inviting a thermal explanation for a contention problem; and a `.gitignore` comment stood in for the vault's actual contents, producing a confident and entirely wrong claim that the exit criteria were unmet. The last one is the sharpest, because it was written *into the section warning about this exact failure*. Documentation is a proxy too. Check the thing.
 - **Model licensing shapes your F-Droid listing.** Decide the EmbeddingGemma/MiniLM (and any LLM model) question with the anti-feature consequences in mind, not after the fact.
 
 ## Prior art & references

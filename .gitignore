@@ -4,11 +4,14 @@
 # Prerequisites section instead.
 models/
 
-# Test vault — third-party content used as a fixture, not project content.
-# The dusklinux/dusky vault is MIT, so vendoring it would be legal but would
-# require carrying its license and copyright notice, which needlessly
-# complicates the Phase 4 license manifest. Clone it instead:
-#   git clone --depth 1 https://github.com/dusklinux/dusky Documents
+# The vault. This is the author's own Obsidian vault, working-copy only —
+# personal notes, never project content, and never committed.
+#
+# This comment previously described a cloned third-party fixture. That was
+# wrong about what is actually in this directory, and the mistake propagated
+# into the roadmap as a claim that Phase 1's exit criteria were unmet.
+# If you are running this project, put your own vault here or point Loam
+# somewhere else entirely — nothing in the build depends on this path.
 Documents/
 
 # Fixtures derived from the test vault — regenerable, and third-party derived
