@@ -54,8 +54,8 @@ Retrieval, on queries sharing no vocabulary with the notes they find:
 
 | Query | Top hit | Score |
 | --- | --- | --- |
-| "how do I set up a virtual machine" | Configure Default Virtual Hardware Using the Wizard | 0.69 |
-| "encrypting a disk with LUKS" | MOC Arch Install FULL › LUKS2 Encryption Setup | 0.65 |
+| "how do I set up a virtual machine" | Configure Windows Virtual Hardware › Start the Creation Wizard | 0.69 |
+| "encrypting a disk with LUKS" | + MOC Arch Install FULL › 8. LUKS2 Encryption Setup | 0.65 |
 | "banana bread recipe with walnuts" | *No good matches* | — |
 
 That last row matters as much as the first two: below a calibrated floor, Loam says it found nothing rather than presenting noise confidently.
