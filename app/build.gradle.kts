@@ -15,6 +15,7 @@ android {
         versionName = "0.1.0"
 
         ndk { abiFilters += "arm64-v8a" }
+        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
     buildTypes {
@@ -136,4 +137,20 @@ dependencies {
     debugImplementation(libs.androidx.ui.tooling)
 
     testImplementation(libs.junit)
+
+    // The Ask pane is a pure function of UiState, so it can be driven directly
+    // with fabricated state — no ViewModel, no engine, no database. That is the
+    // whole reason it is worth testing at this level: the state machine is the
+    // part with branches, and it needs none of the heavy machinery to exercise.
+    androidTestImplementation(libs.junit)
+    androidTestImplementation(libs.androidx.test.junit)
+    androidTestImplementation(libs.androidx.test.runner)
+    // androidx.test:monitor 1.8.0 reflects on InputManager.getInstance, which
+    // no longer exists on Android 17 — every Compose test fails to start with
+    // NoSuchMethodException before reaching an assertion.
+    androidTestImplementation("androidx.test:monitor:1.9.0-alpha01")
+    androidTestImplementation("androidx.test.espresso:espresso-core:3.7.0")
+    androidTestImplementation(platform(libs.androidx.compose.bom))
+    androidTestImplementation(libs.androidx.ui.test.junit4)
+    debugImplementation(libs.androidx.ui.test.manifest)
 }
