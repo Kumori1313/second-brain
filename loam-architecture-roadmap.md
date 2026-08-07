@@ -356,7 +356,26 @@ Thread count was swept and is not a lever — 6 threads (24.25) measured worse t
 
 Practical shape: roughly **8–10 s to first token** for ~1,100 tokens of retrieved context, then streaming at reading speed. K becomes a design dial trading grounding against latency, rather than a hardware wall.
 
-**Carried into the app build — this one is load-bearing.** The bundled `libllama.so` must not be built the way the first spike binary was, but hardcoding `armv8.2-a+dotprod+i8mm` would `SIGILL` on older arm64 devices lacking those extensions. `GGML_CPU_ALL_VARIANTS` with runtime dispatch is the answer, and it is a requirement rather than a nicety: the difference between the two builds is 4x.
+**Carried into the app build — this one is load-bearing.** The bundled `libllama.so` must not be built the way the first spike binary was, but hardcoding `armv8.2-a+dotprod+i8mm` would `SIGILL` on older arm64 devices lacking those extensions. `GGML_CPU_ALL_VARIANTS` with runtime dispatch is the answer, and it is a requirement rather than a nicety: the difference between the two builds is 4x. It is also not sufficient on its own — see below.
+
+#### Runtime CPU dispatch picks the wrong variant on this device
+
+`GGML_CPU_ALL_VARIANTS` requires `GGML_BACKEND_DL=ON` and `BUILD_SHARED_LIBS=ON`, refuses to coexist with `GGML_CPU_ARM_ARCH`, and ships one `.so` per feature set. llama.cpp defines seven for Android, and dispatch verifiably works — `load_backend: loaded CPU backend from ... libggml-cpu-android_armv9.0_1.so`.
+
+It selects the variant with the most features, and on a Tensor G3 that is the wrong one. Measured back to back in a single invocation:
+
+| variant | pp512 | tg64 |
+| --- | --- | --- |
+| `android_armv8.6_1` — DOTPROD, FP16, MATMUL_INT8 | **116.08** | **23.22** |
+| `android_armv9.0_1` — the above plus SVE2 | 64.89 | 18.49 |
+
+**1.79x faster with fewer features.** Tensor G3 implements SVE at 128 bits, so its SVE2 kernels lose badly to well-tuned NEON+i8mm, and the selector has no way to know that. Three separate measurements agree on the ratio, and `armv8.6_1` matches the single-arch static build (131 against 136), which rules out dynamic loading as the cause.
+
+Nothing about this looks wrong at runtime. Dispatch succeeds, loads a genuinely more capable variant, and produces correct output — it is 42% slower than the build it replaced. It surfaced only because the new build was benchmarked against the old one on the same thermal state, and the gap was twice nearly dismissed as throttling.
+
+**Build decision: enable `GGML_CPU_ALL_VARIANTS`, then omit the `armv9*` objects from the APK.** Dispatch falls back to `armv8.6_1`, old devices still get `armv8.0_1` and never `SIGILL`, and a hypothetical phone with genuinely fast SVE2 loses some speed rather than breaking. Revisit if a device is ever measured where SVE2 wins.
+
+Also worth knowing for packaging: the variant build produces 12 shared objects totalling ~89 MB unstripped, against one static `libllama.so`. That is a Phase 4 APK-size problem, not a correctness one.
 
 Still unproven, and it needs real app code: llama.cpp wants a filesystem path to `mmap`, while SAF yields a `content://` URI. The intended route is `ParcelFileDescriptor` → `/proc/self/fd/N`. The FUSE result above shows the filesystem is not the obstacle, but the fd-path trick itself is untested on this device.
 
@@ -388,6 +407,7 @@ Two operational traps, recorded because both cost real time. `-no-cnv` alone doe
 - **Small-model hallucination survives RAG.** Grounding reduces it, doesn't eliminate it — the "sources used" panel is doing real work here, not decoration.
 - **SAF has no true background filesystem watch.** Periodic + manual reindex is the honest architecture, not a stopgap.
 - **First index of a large, long-lived vault will be slow and battery-heavy.** Needs a visible progress state; shouldn't run silently in the background on first launch.
+- **"Newer, more capable, more features" keeps measuring slower.** Q4_K_M lost to Q4_0; SVE2 lost to plain NEON+i8mm by 1.79x; ObjectBox, the most capable vector store, was ruled out on licensing. On-device, the sophisticated option is a hypothesis, not a default — and the wrong one produces correct output at half the speed, which no test catches.
 - **Recurring lesson, now five for five: a claim is only as good as your model of what produced it.** A debug build inflated cosine search 36x; characters stood in for tokens and hid 14% of the vault; a burst of three embeddings stood in for sustained load; two concurrent indexers stood in for one, inflating every indexing figure by 4x and inviting a thermal explanation for a contention problem; and a `.gitignore` comment stood in for the vault's actual contents, producing a confident and entirely wrong claim that the exit criteria were unmet. The last one is the sharpest, because it was written *into the section warning about this exact failure*. Documentation is a proxy too. Check the thing.
 - **Model licensing shapes your F-Droid listing.** Decide the EmbeddingGemma/MiniLM (and any LLM model) question with the anti-feature consequences in mind, not after the fact.
 
