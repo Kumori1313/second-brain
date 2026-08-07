@@ -28,6 +28,7 @@ rootProject.name = "loam"
 // without an Android runtime.
 include(":app")
 include(":core")
+include(":llama")
 
 // `spike/` is a separate Gradle build on purpose. It is throwaway measurement
 // code (see spike/README.md) and must not leak into the real app.
