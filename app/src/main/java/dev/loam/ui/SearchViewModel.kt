@@ -92,22 +92,42 @@ class SearchViewModel(app: Application) : AndroidViewModel(app) {
         observeIndexing()
         observeCounts()
         warmUp()
-        warmModel()
         ensurePeriodicIndexing()
     }
 
     /**
-     * Opens the LLM in the background at startup, for the same reason the
-     * embedder is warmed: the cost is unavoidable, so pay it before the user
-     * asks rather than in front of their first question.
+     * Loads the model when the user reaches the Ask tab, not at startup.
      *
-     * The two are not comparable in weight, though. Warming the embedder is
-     * ~600 ms and a 22 MB session; warming the LLM maps a gigabyte and builds a
-     * context. That is why it runs strictly after [warmUp] rather than
-     * alongside — search is the feature that works today, and it should not
-     * queue behind the model on a cold start.
+     * It used to warm on launch, by analogy with the embedder. The analogy does
+     * not hold: warming the embedder costs ~600 ms and 22 MB, while warming the
+     * LLM puts the process at ~2.1 GB PSS — about 849 MB of it the GGUF
+     * mapping. Paying that for someone who opened the app to search made Loam a
+     * prime candidate for the low-memory killer, which would then also cost
+     * them the warm search index.
      *
-     * Failure is surfaced rather than swallowed. An unreadable or corrupt GGUF
+     * Safe to call on every visit: [Loam.llmEngine] returns the cached engine
+     * when one is already open, so this is a no-op after the first time until
+     * the app is backgrounded and [Loam.closeEngine] releases it.
+     *
+     * Correctness does not depend on this running — asking opens the model
+     * lazily anyway. It only moves the ~1 s cost off the first question.
+     */
+    fun onAskOpened() {
+        if (loam.modelLocation.modelUri == null) {
+            _state.value = _state.value.copy(model = ModelState.None)
+            return
+        }
+        if (loam.isEngineLoaded) {
+            _state.value = _state.value.copy(model = ModelState.Ready)
+            return
+        }
+        warmModel()
+    }
+
+    /**
+     * Opens the model in the background, reporting progress and failure.
+     *
+     * Failure is surfaced rather than swallowed: an unreadable or corrupt GGUF
      * is a different problem from not having chosen one, and only the user can
      * fix either.
      */

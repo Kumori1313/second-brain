@@ -46,6 +46,17 @@ class Loam private constructor(private val context: Context) {
     @Volatile
     var engineFactory: ((Uri) -> LlmEngine)? = null
 
+    /**
+     * Whether the model is resident right now.
+     *
+     * Not the same as "a model is configured" — the engine is released when the
+     * app is backgrounded, so a picked model can be absent from memory. The UI
+     * needs the distinction to avoid claiming Ready for something it would have
+     * to reopen.
+     */
+    val isEngineLoaded: Boolean
+        get() = engine != null
+
     private val engineMutex = Mutex()
     private var engine: LlmEngine? = null
     private var engineUri: Uri? = null

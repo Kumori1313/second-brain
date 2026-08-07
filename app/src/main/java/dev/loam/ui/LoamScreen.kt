@@ -48,6 +48,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.compose.LifecycleResumeEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import dev.loam.core.domain.SearchNotes
 
@@ -110,6 +111,13 @@ fun LoamScreen(viewModel: SearchViewModel) {
             }
 
             if (tab == TAB_ASK) {
+                // Re-runs on every resume, not just on tab change: the model is
+                // released whenever the app is backgrounded, so coming back to
+                // a visible Ask tab has to reopen it.
+                LifecycleResumeEffect(Unit) {
+                    viewModel.onAskOpened()
+                    onPauseOrDispose { }
+                }
                 AskPane(
                     state = state,
                     onQuestionChange = viewModel::onQuestionChange,
