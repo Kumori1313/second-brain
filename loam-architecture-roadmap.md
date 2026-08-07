@@ -24,7 +24,7 @@ It is **not** another note editor. It doesn't own your files, doesn't invent a p
 
 These double as acceptance criteria — if a build violates one of these, something's gone wrong:
 
-1. **Core functionality needs zero network permission.** Search, and Q&A once a model is on-device, work in airplane mode, forever. The only legitimate network use is a one-time, explicit, user-initiated model download.
+1. **Zero network permission — no exception, including Phase 2.** Search, and Q&A once a model is on-device, work in airplane mode, forever. This principle originally carved out an exception for a one-time user-initiated model download; the Phase 2 spike removed the need for it. The LLM is sideloaded through the same SAF picker as the vault, so the app never holds `INTERNET` at any point in its life.
 2. **No proprietary storage format.** Notes stay as plain `.md` files, wherever you already keep them.
 3. **No Google dependencies.** No Play Services, no Firebase, no GMS-only APIs. Assume the target device may not have Play Services installed at all.
 4. **Auditable, not a black box.** Every answer shows which notes it came from. No silent telemetry, ever.
@@ -308,10 +308,59 @@ Results hand off with a plain `ACTION_VIEW`, on the assumption the user sets a s
 Loam therefore remembers the choice itself: long-press a result to pin an app. Stored as a `ComponentName` rather than a package, because one package can own several matching activities — Material Files ships both a text viewer and a "Save as", so `setPackage` would have replaced the system picker with a smaller one. An explicit component bypasses resolution entirely, so it cannot be perturbed by whatever else is installed. Package visibility comes from a `<queries>` element scoped to `VIEW text/*`, **not** `QUERY_ALL_PACKAGES`, which would be a permission on the F-Droid listing for a far broader question than the one being asked.
 
 ### Phase 2 — RAG Q&A
-- Integrate the chosen LLM runtime; GGUF model loading; a model download/picker flow (this is where INTERNET permission enters, scoped narrowly to "fetch model").
+- Integrate the chosen LLM runtime; GGUF model loading; a model picker flow.
 - Build retrieve-then-generate; the "sources used" panel.
 - Handle low-confidence retrieval honestly — surface "no good matches" rather than forcing a hallucinated answer.
-- **Exit criteria:** a real question about your notes gets a grounded, sourced answer, fully offline once the model is downloaded.
+- **Exit criteria:** a real question about your notes gets a grounded, sourced answer, fully offline.
+
+#### Phase 2 decisions — settled
+
+**Runtime: Track A, llama.cpp via JNI.** Track B's portability payoff belongs to Phase 5, and its two routes both weaken on inspection: candle is immature for quantized ARM inference, and `llama-cpp-2` is Track A with a Rust layer on top. The RAG orchestration lives in Kotlin either way, so only the inference call sits behind the seam — which keeps the door open rather than nailing it shut.
+
+**Model delivery: SAF file picker, not an in-app download.** This document previously assumed `INTERNET` had to enter at Phase 2. It does not. The user fetches a GGUF however they like and points Loam at it with the same picker already used for the vault, taking a persistable read grant. **Loam keeps zero network permission permanently**, which preserves the one guarantee the project leads with and keeps the README's one-line verification meaningful. The cost is that the user sideloads a 1–3 GB file, which suits the F-Droid/Obtainium audience this is built for.
+
+**Quantization: Q4_0, not Q4_K_M** — see the measurements below.
+
+#### Phase 2 spike — measured on a Pixel 8a before writing app code
+
+Following Phase 0's pattern: prove the risky part with throwaway tooling first. llama.cpp cross-compiled for `arm64-v8a` against NDK r27 LTS, driven entirely over `adb shell`, with Qwen2.5-1.5B-Instruct (Apache-2.0, chosen over Gemma and Llama to avoid a Non-Free Assets tag).
+
+**The build flags were worth 4x, and nearly cost the phase.** First measurements looked fatal: `pp512` at 26.6 t/s against `tg128` at 11.6 t/s. Prompt processing is batched matmul and normally runs 10–50x generation on CPU, so 2.3x was the anomaly worth chasing. It was not the hardware and not the quantization — `ANDROID_ABI=arm64-v8a` targets baseline armv8-a, so `HAVE_DOTPROD` failed its feature test and every dotprod/i8mm/SVE kernel was compiled out, on a CPU that advertises all three in `/proc/cpuinfo`. Rebuilding with `-DGGML_CPU_ARM_ARCH="armv8.2-a+dotprod+i8mm"`, measured back to back on the same thermal state:
+
+| | pp512 | tg64 |
+| --- | --- | --- |
+| baseline armv8-a | 18.67 | 11.31 |
+| +dotprod+i8mm | **74.81** | 12.40 |
+
+Generation barely moved, correctly: it is memory-bandwidth-bound, while prompt processing is compute-bound. Only one of them could benefit.
+
+**Two conclusions inverted once the kernels existed.** Against the crippled binary, Q4_0 measured *slower* than Q4_K_M (17.12 vs 20.14 pp512) and the obvious reading was "Q4_0 repacking does not help on Tensor G3". With working kernels it is decisively faster, and steadier:
+
+| | pp512 | tg64 |
+| --- | --- | --- |
+| Q4_K_M | 83.92 | 14.07 ± 3.17 |
+| Q4_0 | **108.54** | **18.39 ± 0.10** |
+
+Thread count was swept and is not a lever — 6 threads (24.25) measured worse than 4 (26.62).
+
+**Throughput depends heavily on thermal state.** On a cool device the same Q4_0 build reaches `pp512` 136.6 and `tg64` 26.7; hot, it settles nearer 108 and 18. Quote the range, not the best run.
+
+**Storage: FUSE costs ~4%,** so the sideload plan holds and no copy into app-private storage is needed:
+
+| | pp512 | tg64 |
+| --- | --- | --- |
+| ext4 `/data/local/tmp` | 136.60 | 26.74 |
+| FUSE `/sdcard` | 131.21 | 25.83 |
+
+**Both halves of the exit criterion behave, on real notes.** Given the actual `+ MOC Arch Install FULL › 8. LUKS2 Encryption Setup` chunk and asked which cipher and KDF the setup uses and why `--allow-discards` was passed, the model returned `aes-xts-plain64`, `argon2id`, and the `discard=async` consequence — the last being the detail that distinguishes reading the note from reciting LUKS boilerplate. Asked something the note cannot answer (SSD brand and price), it replied "I could not find that in your notes." Refusal is the Ask-side counterpart of "No good matches" and the property most likely to be fragile at 1.5B.
+
+Practical shape: roughly **8–10 s to first token** for ~1,100 tokens of retrieved context, then streaming at reading speed. K becomes a design dial trading grounding against latency, rather than a hardware wall.
+
+**Carried into the app build — this one is load-bearing.** The bundled `libllama.so` must not be built the way the first spike binary was, but hardcoding `armv8.2-a+dotprod+i8mm` would `SIGILL` on older arm64 devices lacking those extensions. `GGML_CPU_ALL_VARIANTS` with runtime dispatch is the answer, and it is a requirement rather than a nicety: the difference between the two builds is 4x.
+
+Still unproven, and it needs real app code: llama.cpp wants a filesystem path to `mmap`, while SAF yields a `content://` URI. The intended route is `ParcelFileDescriptor` → `/proc/self/fd/N`. The FUSE result above shows the filesystem is not the obstacle, but the fd-path trick itself is untested on this device.
+
+Two operational traps, recorded because both cost real time. `-no-cnv` alone does not stop the current `llama-cli` entering its REPL — it needs `-st`, and without it the process spun out 160 MB of empty prompts. And short generations produce meaningless throughput figures: the same run that answered correctly reported 1.1 t/s, and a 7-token refusal reported 5.3 t/s, both dominated by fixed setup cost. Benchmark generation over a fixed token count or not at all.
 
 ### Phase 3 — Polish & real-world hardening
 - Paginated/streamed indexing so a large vault doesn't freeze the UI on first run.

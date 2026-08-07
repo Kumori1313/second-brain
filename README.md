@@ -14,7 +14,7 @@ Android · Kotlin · Jetpack Compose · MIT
 
 These are acceptance criteria, not aspirations. Anything that violates one gets flagged rather than quietly added.
 
-1. **Zero network permission.** Search works in airplane mode. The APK has no `INTERNET` permission at all — not "we promise not to phone home", but a guarantee the OS enforces. The only legitimate future network use is a one-time, explicit, user-initiated model download in Phase 2.
+1. **Zero network permission — permanently.** Search works in airplane mode. The APK has no `INTERNET` permission at all — not "we promise not to phone home", but a guarantee the OS enforces. This survives Phase 2's local LLM: the model is sideloaded through the same file picker used for the vault, so Loam never needs network access at any point.
 2. **No proprietary storage format.** Notes remain plain `.md` files in your own folder. Delete Loam and you have lost nothing.
 3. **No Google dependencies.** No Play Services, no Firebase, no GMS-only APIs — the target device may not have Play Services at all. On-device inference runs on ONNX Runtime, which is Microsoft's.
 4. **Auditable, not a black box.** Every result shows its source file, heading breadcrumb, and similarity score. No silent telemetry.
