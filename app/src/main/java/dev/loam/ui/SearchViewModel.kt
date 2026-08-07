@@ -8,8 +8,10 @@ import androidx.work.WorkInfo
 import androidx.work.WorkManager
 import java.util.UUID
 import dev.loam.core.Loam
+import dev.loam.core.domain.AskQuestion
 import dev.loam.core.domain.SearchNotes
 import dev.loam.work.IndexWorker
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -38,7 +40,31 @@ class SearchViewModel(app: Application) : AndroidViewModel(app) {
         val chunkCount: Int = 0,
         val modelName: String? = null,
         val model: ModelState = ModelState.None,
+        val ask: AskState = AskState(),
     )
+
+    /**
+     * @param sources arrive before any answer text and stay put. Rendering them
+     *   during the ~10 s wait is the point: it gives the user something to read,
+     *   and it means the citations were fixed before the model spoke.
+     */
+    data class AskState(
+        val question: String = "",
+        val asking: Boolean = false,
+        val answer: String = "",
+        val sources: List<AskQuestion.Source> = emptyList(),
+        val outcome: Outcome? = null,
+    ) {
+        sealed interface Outcome {
+            /** Retrieval found nothing worth answering from. */
+            data object NoGoodMatches : Outcome
+
+            /** No model chosen — a setup step, distinct from a broken one. */
+            data object NoModel : Outcome
+
+            data class Failed(val message: String) : Outcome
+        }
+    }
 
     /**
      * Distinguishing [None] from [Failed] is what stops a corrupt GGUF reading
@@ -290,6 +316,69 @@ class SearchViewModel(app: Application) : AndroidViewModel(app) {
             delay(SEARCH_DEBOUNCE_MS)
             search(query)
         }
+    }
+
+    private var askJob: Job? = null
+
+    fun onQuestionChange(question: String) {
+        _state.value = _state.value.copy(ask = _state.value.ask.copy(question = question))
+    }
+
+    /**
+     * Not debounced, unlike search.
+     *
+     * A question costs ~10 s of prompt processing and then streams; firing that
+     * per keystroke would be absurd. Asking is an explicit act.
+     */
+    fun ask() {
+        val question = _state.value.ask.question
+        if (question.isBlank()) return
+
+        askJob?.cancel()
+        _state.value = _state.value.copy(
+            ask = AskState(question = question, asking = true),
+        )
+        askJob = viewModelScope.launch {
+            try {
+                loam.askQuestion.ask(question).collect { event ->
+                    val ask = _state.value.ask
+                    _state.value = _state.value.copy(
+                        ask = when (event) {
+                            is AskQuestion.Event.Sources ->
+                                ask.copy(sources = event.sources)
+
+                            is AskQuestion.Event.Token ->
+                                ask.copy(answer = ask.answer + event.text)
+
+                            AskQuestion.Event.NoGoodMatches ->
+                                ask.copy(outcome = AskState.Outcome.NoGoodMatches)
+
+                            AskQuestion.Event.NoModel ->
+                                ask.copy(outcome = AskState.Outcome.NoModel)
+                        }
+                    )
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                // A model that fails to load surfaces here rather than as
+                // NoModel — "broken" and "not chosen" need different answers.
+                _state.value = _state.value.copy(
+                    ask = _state.value.ask.copy(
+                        outcome = AskState.Outcome.Failed(e.message ?: "Could not answer"),
+                    )
+                )
+            } finally {
+                _state.value = _state.value.copy(ask = _state.value.ask.copy(asking = false))
+            }
+        }
+    }
+
+    /** Abandons generation; the Flow being cold means the model stops too. */
+    fun cancelAsk() {
+        askJob?.cancel()
+        askJob = null
+        _state.value = _state.value.copy(ask = _state.value.ask.copy(asking = false))
     }
 
     private suspend fun search(query: String) {

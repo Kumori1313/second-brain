@@ -8,6 +8,7 @@
 #include <jni.h>
 #include <android/log.h>
 
+#include <algorithm>
 #include <cstdio>
 #include <string>
 #include <unistd.h>
@@ -314,14 +315,32 @@ Java_dev_loam_llama_LlamaNative_generate(
         return;
     }
 
+    const uint32_t n_ctx = llama_n_ctx(s->ctx);
+    if (tokens.size() >= n_ctx) {
+        // Would overrun the window. The caller budgets against this, but a
+        // mismatch here must not reach llama_decode, which aborts the process
+        // rather than returning an error.
+        LOGE("prompt of %zu tokens does not fit a %u-token context", tokens.size(), n_ctx);
+        return;
+    }
+
     // Start from a clean slate: each question is independent, and leftover KV
     // from a previous answer would silently condition this one.
     llama_memory_clear(llama_get_memory(s->ctx), true);
 
-    llama_batch batch = llama_batch_get_one(tokens.data(), (int32_t) tokens.size());
-    if (llama_decode(s->ctx, batch) != 0) {
-        LOGE("prompt decode failed (%zu tokens)", tokens.size());
-        return;
+    // Feed the prompt in n_batch-sized pieces. llama_decode asserts — and
+    // therefore aborts the whole process — when a single batch exceeds
+    // n_batch, and a real RAG prompt is well over the 512 default. Passing the
+    // whole prompt at once survives short test prompts and kills the app on
+    // the first genuine question.
+    const int32_t n_batch = (int32_t) llama_n_batch(s->ctx);
+    for (size_t off = 0; off < tokens.size(); off += n_batch) {
+        const int32_t n = (int32_t) std::min((size_t) n_batch, tokens.size() - off);
+        llama_batch batch = llama_batch_get_one(tokens.data() + off, n);
+        if (llama_decode(s->ctx, batch) != 0) {
+            LOGE("prompt decode failed at offset %zu of %zu", off, tokens.size());
+            return;
+        }
     }
 
     auto sparams = llama_sampler_chain_default_params();

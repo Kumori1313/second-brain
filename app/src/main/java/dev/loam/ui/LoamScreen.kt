@@ -32,10 +32,13 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Tab
+import androidx.compose.material3.TabRow
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -63,6 +66,7 @@ fun LoamScreen(viewModel: SearchViewModel) {
 
     val opener = remember { NoteOpener(context) }
     var showOpenWith by remember { mutableStateOf(false) }
+    var tab by remember { mutableIntStateOf(TAB_SEARCH) }
 
     if (showOpenWith) {
         OpenWithDialog(
@@ -88,6 +92,35 @@ fun LoamScreen(viewModel: SearchViewModel) {
                 return@Column
             }
 
+            // "*/*" because GGUF has no registered MIME type — filtering on one
+            // would hide the file the user came to pick.
+            val onPickModel = { pickModel.launch(arrayOf("*/*")) }
+
+            TabRow(selectedTabIndex = tab) {
+                Tab(
+                    selected = tab == TAB_SEARCH,
+                    onClick = { tab = TAB_SEARCH },
+                    text = { Text("Search") },
+                )
+                Tab(
+                    selected = tab == TAB_ASK,
+                    onClick = { tab = TAB_ASK },
+                    text = { Text("Ask") },
+                )
+            }
+
+            if (tab == TAB_ASK) {
+                AskPane(
+                    state = state,
+                    onQuestionChange = viewModel::onQuestionChange,
+                    onAsk = viewModel::ask,
+                    onCancel = viewModel::cancelAsk,
+                    onPickModel = onPickModel,
+                    onOpenSource = { source -> openSource(context, opener, source) },
+                )
+                return@Column
+            }
+
             OutlinedTextField(
                 value = state.query,
                 onValueChange = viewModel::onQueryChange,
@@ -103,13 +136,6 @@ fun LoamScreen(viewModel: SearchViewModel) {
                 state = state,
                 onReindex = viewModel::reindex,
                 onChangeVault = { pickVault.launch(null) },
-            )
-
-            ModelStatusBar(
-                state = state,
-                // "*/*" because GGUF has no registered MIME type — filtering on
-                // one would hide the file the user came to pick.
-                onPickModel = { pickModel.launch(arrayOf("*/*")) },
             )
 
             HorizontalDivider()
@@ -216,7 +242,7 @@ private fun IndexStatusBar(
  * marginal at this width.
  */
 @Composable
-private fun ModelStatusBar(
+fun ModelStatusBar(
     state: SearchViewModel.UiState,
     onPickModel: () -> Unit,
 ) {
@@ -389,18 +415,31 @@ private fun HandlerRow(
     }
 }
 
-private fun openNote(
+fun openSource(
+    context: android.content.Context,
+    opener: NoteOpener,
+    source: dev.loam.core.domain.AskQuestion.Source,
+) = openUri(context, opener, source.uri, source.displayName)
+
+fun openNote(
     context: android.content.Context,
     opener: NoteOpener,
     result: SearchNotes.Result,
+) = openUri(context, opener, result.uri, result.displayName)
+
+private fun openUri(
+    context: android.content.Context,
+    opener: NoteOpener,
+    uri: String,
+    displayName: String,
 ) {
-    if (!opener.open(context, result.uri)) {
+    if (!opener.open(context, uri)) {
         // Previously this failed silently: on a device with no text viewer,
         // tapping a result did nothing at all and looked like a broken app
         // rather than a missing one.
         Toast.makeText(
             context,
-            "No app installed that can open ${result.displayName}",
+            "No app installed that can open $displayName",
             Toast.LENGTH_LONG,
         ).show()
         return
@@ -416,3 +455,6 @@ private fun openNote(
         ).show()
     }
 }
+
+private const val TAB_SEARCH = 0
+private const val TAB_ASK = 1

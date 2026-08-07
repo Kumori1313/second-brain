@@ -140,6 +140,37 @@ class LlamaEngineTest {
     }
 
     @Test
+    fun answersAPromptLargerThanOneBatch() = runBlocking {
+        val model = requireModel()
+
+        // The default n_batch is 512 and llama_decode *aborts the process*
+        // rather than erroring when a single batch exceeds it. Every other test
+        // here uses a two-line prompt, so all of them passed while the first
+        // real RAG question — a thousand tokens of retrieved notes — killed the
+        // app. Anything over 512 tokens exercises the batching loop.
+        // Plain repeated words, not "token0 token1 …" — the latter tokenizes to
+        // roughly four tokens each and overran the context, so the first
+        // version of this test tripped the size guard instead of the batching
+        // loop it was written for.
+        val long = List(800) { "word" }.joinToString(" ")
+        val messages = listOf(
+            Message(Message.Role.SYSTEM, "Reply with one word."),
+            Message(Message.Role.USER, "$long\n\nSay OK."),
+        )
+
+        LlamaEngine.openPath(context, model.absolutePath, contextTokens = 2048).use { engine ->
+            val promptTokens = engine.countTokens(long)
+            assertTrue("fixture must exceed n_batch to be meaningful", promptTokens > 512)
+            assertTrue("fixture must still fit the context", promptTokens < 1800)
+            val answer = engine
+                .generate(messages, GenerationParams(maxTokens = 8, temperature = 0f))
+                .toList()
+                .joinToString("")
+            assertTrue("no answer for a multi-batch prompt", answer.isNotBlank())
+        }
+    }
+
+    @Test
     fun abandoningCollectionStopsGeneration() = runBlocking {
         val model = requireModel()
 
