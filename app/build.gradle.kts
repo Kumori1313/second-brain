@@ -39,6 +39,22 @@ android {
         noCompress += listOf("onnx", "txt")
     }
 
+    packaging {
+        jniLibs {
+            // Must be repeated here. :llama sets the same flag, but packaging
+            // options are per-APK and do not propagate from a library module —
+            // verified by finding extractNativeLibs=false in the built APK
+            // after :llama already had it set.
+            //
+            // llama.cpp's CPU backends are dlopen'd by absolute path, which
+            // needs real files on disk. Left at the modern default the
+            // libraries stay inside the APK, the JNI shim still loads through
+            // the classloader, and the failure appears later as "no backends
+            // are loaded" at model load. :llama's own instrumented tests would
+            // not have caught this, since they build their own APK.
+            useLegacyPackaging = true
+        }
+    }
 }
 
 /**
@@ -104,6 +120,7 @@ androidComponents {
 
 dependencies {
     implementation(project(":core"))
+    implementation(project(":llama"))
 
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.lifecycle.runtime.ktx)

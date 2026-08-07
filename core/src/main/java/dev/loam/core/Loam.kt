@@ -1,14 +1,20 @@
 package dev.loam.core
 
 import android.content.Context
+import android.net.Uri
+import dev.loam.core.domain.AskQuestion
 import dev.loam.core.domain.IndexStats
 import dev.loam.core.domain.IndexVault
+import dev.loam.core.domain.ModelLocation
 import dev.loam.core.domain.SearchNotes
 import dev.loam.core.domain.VaultLocation
 import dev.loam.core.embed.Embedder
+import dev.loam.core.llm.LlmEngine
 import dev.loam.core.embed.WordPieceTokenizer
 import dev.loam.core.vault.TokenCounter
 import java.io.File
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 
 /**
  * Wires the core together. Hand-rolled rather than a DI framework — there are
@@ -17,9 +23,71 @@ import java.io.File
 class Loam private constructor(private val context: Context) {
 
     val vaultLocation by lazy { VaultLocation(context) }
+    val modelLocation by lazy { ModelLocation(context) }
     val indexStats by lazy { IndexStats(context) }
     val indexVault by lazy { IndexVault(context, ::newEmbedder, tokenCounter) }
     val searchNotes by lazy { SearchNotes(context, ::newEmbedder) }
+    val askQuestion by lazy {
+        AskQuestion(
+            retriever = { question, limit -> searchNotes.search(question, limit) },
+            engine = ::llmEngine,
+        )
+    }
+
+    /**
+     * Opens a GGUF. Supplied by `:app` at startup rather than constructed here,
+     * because `:llama` depends on this module for the [LlmEngine] interface and
+     * `:core` referencing `LlamaEngine` back would be a dependency cycle.
+     *
+     * The alternative was moving this class into `:app`, which would churn
+     * working Phase 1 wiring to solve a problem one nullable field solves.
+     */
+    @Volatile
+    var engineFactory: ((Uri) -> LlmEngine)? = null
+
+    private val engineMutex = Mutex()
+    private var engine: LlmEngine? = null
+    private var engineUri: Uri? = null
+
+    /**
+     * The loaded model, opening it on first use.
+     *
+     * Cached for the process: the weights are mapped, not copied, but building
+     * a context still costs seconds, and re-opening per question would put that
+     * in front of every answer. Serialized because the native context is not
+     * safe for concurrent use and the failure mode is corruption rather than an
+     * exception.
+     *
+     * Returns null when there is nothing to load — no model picked, or no
+     * factory installed. Throws [dev.loam.core.llm.ModelLoadException] when
+     * there is something to load and it fails, so the UI can tell a setup step
+     * apart from a broken file.
+     */
+    suspend fun llmEngine(): LlmEngine? = engineMutex.withLock {
+        val uri = modelLocation.modelUri ?: return@withLock null
+        val factory = engineFactory ?: return@withLock null
+
+        engine?.let { if (engineUri == uri) return@withLock it }
+
+        // The picked model changed. Release the old mapping before opening
+        // another — two gigabyte-scale mappings at once is how this gets killed
+        // by the OOM reaper on a phone with ~1 GB free.
+        closeEngineLocked()
+
+        return@withLock factory(uri).also {
+            engine = it
+            engineUri = uri
+        }
+    }
+
+    /** Call when the model selection changes, or the process is winding down. */
+    suspend fun closeEngine() = engineMutex.withLock { closeEngineLocked() }
+
+    private fun closeEngineLocked() {
+        engine?.let { runCatching { it.close() } }
+        engine = null
+        engineUri = null
+    }
 
     /**
      * One tokenizer for the process. Parsing the 30,522-line vocabulary is not

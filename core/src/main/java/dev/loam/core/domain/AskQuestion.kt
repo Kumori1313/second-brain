@@ -42,8 +42,14 @@ class AskQuestion(
      * prompt budgeting.
      */
     private val retriever: Retriever,
-    /** Null until the user has chosen a model file. Not an error state. */
-    private val engine: () -> LlmEngine?,
+    /**
+     * Null until the user has chosen a model file — a setup state, not an
+     * error. Suspending because the first call may open a gigabyte of weights,
+     * and a plain getter would hide that behind what looks like a field read.
+     * A model that fails to load throws rather than returning null: "not
+     * chosen" and "chosen but broken" need different answers from the UI.
+     */
+    private val engine: suspend () -> LlmEngine?,
 ) {
 
     fun interface Retriever {
