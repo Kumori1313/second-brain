@@ -2,7 +2,9 @@
 
 Semantic search over the Markdown notes you already own — running entirely on your phone.
 
-Ask *"did I ever write about setting up a virtual machine"* and get the right note back, even when it never uses those words. Loam reads `.md` files in place through the Storage Access Framework, embeds them on-device, and searches by meaning rather than by string match.
+Ask *"did I ever write about setting up a virtual machine"* and get the right note back, even when it never uses those words. Then ask a question and get an answer written from those notes, by a language model running on the phone, with every source it used listed before it starts writing.
+
+Loam reads `.md` files in place through the Storage Access Framework, embeds them on-device, and searches by meaning rather than by string match. Nothing leaves the device, and nothing can: the app holds no network permission.
 
 It is **not** a note editor and does not want to be. Your notes stay plain `.md` files wherever you already keep them; tapping a result opens the real file in whatever app you already use.
 
@@ -40,7 +42,7 @@ The first three come from WorkManager and are what let a long index survive the 
 
 ## Status
 
-**Phase 1 complete** — indexing and semantic search, no LLM yet. Measured on a Pixel 8a (Tensor G3, Android 17) against a real 392-note Obsidian vault:
+**Phases 1 and 2 complete** — semantic search, and grounded Q&A over a local LLM. Measured on a Pixel 8a (Tensor G3, Android 17) against a real 392-note Obsidian vault:
 
 | | |
 | --- | --- |
@@ -60,7 +62,21 @@ Retrieval, on queries sharing no vocabulary with the notes they find:
 
 That last row matters as much as the first two: below a calibrated floor, Loam says it found nothing rather than presenting noise confidently.
 
-**Next:** Phase 2 — local LLM for grounded Q&A over retrieved chunks, with a mandatory "sources used" panel. See [the roadmap](loam-architecture-roadmap.md) for the full phase plan and every measurement behind these numbers.
+**Ask**, on the same vault and device, with a sideloaded Qwen2.5-1.5B-Instruct (Q4_0, Apache-2.0):
+
+> **Q:** What cipher and key derivation does my LUKS setup use
+> **A:** The LUKS setup uses cipher `aes-xts-plain64` and key derivation `argon2id`.
+> *6 sources, top match `+ MOC Arch Install FULL › LUKS Operations` at 0.64*
+
+| | |
+| --- | --- |
+| Model load at startup | 1054 ms (mmap'd, not read) |
+| First token, ~1,100-token context | 8–10 s |
+| Generation | 18–27 tokens/sec |
+
+Sources are shown the moment retrieval finishes — about ten seconds before the first token — so the wait is readable and the citations are fixed before the model speaks.
+
+**Next:** Phase 3, polish and hardening. See [the roadmap](loam-architecture-roadmap.md) for the full phase plan and every measurement behind these numbers.
 
 ## Building
 
@@ -82,19 +98,22 @@ model_qint8_arm64.onnx    # 22 MB, INT8 quantized for ARM64 — this is the one 
 vocab.txt                 # 30,522-line WordPiece vocabulary
 ```
 
-The build fails with an explicit list of what is missing if they are absent. This one-time download is the single legitimate use of network access described in principle #1 — done manually, deliberately, and outside the app.
+The build fails with an explicit list of what is missing if they are absent.
+
+For **Ask**, download any GGUF chat model — Qwen2.5-1.5B-Instruct Q4_0 is what the measurements above use — put it anywhere on the phone, and select it with *Choose model* in the Ask tab. Both downloads happen on your machine, deliberately and outside the app, which is why the APK needs no network permission of its own.
 
 Requirements: `minSdk 26` · `compileSdk`/`targetSdk 37` · `arm64-v8a` only · AGP 9.3.1 · Kotlin 2.4.10 · Gradle 9.6.1
 
 ## How it works
 
 ```
-Compose UI  ──  search · results · reindex status
+Compose UI  ──  Search · Ask · sources panel · reindex status
      │
-Domain      ──  SearchNotes · IndexVault · VaultLocation
+Domain      ──  SearchNotes · AskQuestion · IndexVault · VaultLocation · ModelLocation
      │
      ├─ Vault Reader      SAF tree walk via DocumentsContract, token-budgeted chunking
      ├─ Embedder          MiniLM-L6-v2 INT8 on ONNX Runtime, 384-dim, mean-pooled, L2-normalized
+     ├─ LlmEngine         interface in :core; llama.cpp over JNI in :llama
      └─ Store             Room + SQLCipher, key wrapped by the Android Keystore
                           search: brute-force cosine over normalized vectors
 ```
@@ -106,15 +125,20 @@ A few decisions worth knowing before changing related code — full rationale in
 - **Inputs are padded to 32-token buckets**, not to a flat 256. Attention is O(n²), and most chunks are far shorter than the window.
 - **The index is encrypted at rest.** It is derived from personal notes, so it is as sensitive as the notes themselves.
 - **Indexing is periodic plus manual.** SAF offers no filesystem watch, so there is nothing to subscribe to. This is the honest architecture, not a gap.
+- **The LLM is sideloaded, never downloaded.** You fetch a GGUF however you like and point Loam at it with the same picker used for the vault. That is what keeps the zero-network guarantee true through Phase 2 rather than only up to it.
+- **The answer model is chosen at runtime, per device.** llama.cpp ships several CPU backends and picks by feature count, which on a Tensor G3 selects an SVE2 build that is 1.79x *slower* than the plain NEON+i8mm one. Those variants are excluded from the APK deliberately.
 
 ## Layout
 
 ```
 app/     Compose UI, WorkManager indexing job, note hand-off
-core/    Domain, chunking, embedding, encrypted store, vector search
+core/    Domain, chunking, embedding, encrypted store, vector search, LlmEngine
+llama/   llama.cpp over JNI (submodule, pinned) — implements LlmEngine
 spike/   Phase 0 throwaway harness — separate Gradle build, exists to be deleted
-models/  Model weights (gitignored — see Building)
+models/  Embedding model weights (gitignored — see Building)
 ```
+
+Clone with `--recurse-submodules`; `llama/llama.cpp` is pinned to the commit every measurement was taken against.
 
 `loam-architecture-roadmap.md` is the design document and the authoritative record of what was measured, what was wrong, and why. It keeps its own mistakes on the page rather than editing them out.
 

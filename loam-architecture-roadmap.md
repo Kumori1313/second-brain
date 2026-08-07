@@ -59,7 +59,7 @@ Domain layer (use cases)
 | Note storage | Read `.md` files in place via Storage Access Framework | Interop with whatever you already use; a fraction of the work of a real editor | Own editor + DB — reinvents Obsidian/Markor for no real gain |
 | Vector search | Brute-force cosine similarity for MVP; add **sqlite-vec** (MIT/Apache-2.0, confirmed to run on Android via precompiled loadable extensions) only if a vault outgrows it | Personal note collections are realistically low thousands of chunks — brute force is fast enough and has zero exotic dependencies | **ObjectBox** — genuinely excellent API and the first real on-device vector DB for Android, but its native engine ships under the proprietary "ObjectBox Binary License," not an OSI-approved one. F-Droid maintainers have explicitly flagged apps using it as unusable for F-Droid. Ruling it out now avoids a rewrite later. |
 | Embedding model | **EmbeddingGemma** (308M params, small enough to run in well under 200MB of RAM when quantized, purpose-built for on-device RAG) as default; **MiniLM-L6-v2** (Apache-2.0, ~80MB) as an alternate build flavor | EmbeddingGemma is currently the strongest open embedding model under 500M params; MiniLM is smaller and fully, unambiguously OSI-licensed | Cloud embedding APIs — ruled out immediately, breaks principle #1 |
-| Local LLM runtime (Phase 2+) | **Track A:** llama.cpp via JNI, running GGUF models (Gemma 3, Qwen, Llama 3.2, Phi-4 Mini). **Track B:** a Rust core (candle or llama-cpp-2 bindings) exposed via UniFFI | Track A is the well-trodden path other FOSS on-device apps use. Track B reuses the Cubiomes-FFI pattern from the Minecraft seed-map project, and leaves you with a portable engine you could reuse in a future desktop build | Google AI Edge / LiteRT LLM Inference API — solid, Apache-2.0, and genuinely standalone (no Play Services needed at runtime), but it's still Google's SDK — worth weighing against the point of the project |
+| Local LLM runtime | **Track A, chosen and shipped:** llama.cpp via JNI, running GGUF models. Track B (a Rust core via UniFFI) stays possible behind the `LlmEngine` interface | Track A is the well-trodden path other FOSS on-device apps use. Track B reuses the Cubiomes-FFI pattern from the Minecraft seed-map project, and leaves you with a portable engine you could reuse in a future desktop build | Google AI Edge / LiteRT LLM Inference API — solid, Apache-2.0, and genuinely standalone (no Play Services needed at runtime), but it's still Google's SDK — worth weighing against the point of the project |
 | Encryption at rest | SQLCipher (public-domain SQLite core, Apache-2.0 Android bindings) + AndroidX Biometric for unlock | Notes are personal by definition; encrypt the derived index too, don't just assume the OS handles it | Unencrypted Room DB — simpler, but no at-rest protection if the device is lost or compromised |
 | Distribution | F-Droid, mirrored on GitHub Releases (Obtainium-friendly) | Matches the toolchain you already use | Play Store — would add a Google dependency purely for distribution |
 
@@ -91,7 +91,7 @@ A note on the embedding-model choice and F-Droid: EmbeddingGemma ships under Goo
 - **Background work:** WorkManager (indexing), AndroidX Biometric (lock)
 - **File access:** Storage Access Framework
 - **Embedding runtime:** ONNX Runtime Mobile (zero Google code) or Google AI Edge / LiteRT (Google-authored but standalone, no Play Services required, well-optimized for Gemma models) — pick based on how strict you want the "no Google code in the dependency tree" line to be, versus just "no Google services"
-- **LLM runtime (Phase 2+):** llama.cpp (JNI) or a Rust core via `cargo-ndk` + UniFFI
+- **LLM runtime:** llama.cpp via JNI (`:llama`), pinned as a submodule. Model sideloaded through SAF, so no network permission is ever needed
 
 If you take the Rust track, one Android-specific gotcha either way: Google ships **two** distribution modes for the TFLite/LiteRT runtime — bundled-in-APK (works on any device, larger APK) and Play-Services-delivered (smaller APK, requires GMS). For a GrapheneOS-friendly app, bundled is the only mode that makes sense, and it's an easy thing to get wrong by following a generic tutorial aimed at mainstream devices.
 
@@ -313,6 +313,34 @@ Loam therefore remembers the choice itself: long-press a result to pin an app. S
 - Handle low-confidence retrieval honestly — surface "no good matches" rather than forcing a hallucinated answer.
 - **Exit criteria:** a real question about your notes gets a grounded, sourced answer, fully offline.
 
+#### Phase 2 status — exit criteria met, verified on device
+
+Asked on a Pixel 8a against the real vault, in airplane-mode-capable form since the APK has no network permission to disable:
+
+> **Q:** What cipher and key derivation does my LUKS setup use
+> **A:** The LUKS setup uses cipher `aes-xts-plain64` and key derivation `argon2id`.
+> *6 sources, top match `+ MOC Arch Install FULL › LUKS Operations` at 0.64*
+
+Shape of the built thing: `:core` holds `LlmEngine`, `AskQuestion` and `ModelLocation`; `:llama` implements the engine over llama.cpp with the native build settled below; `:app` installs the engine factory, since `:llama` depends on `:core` and `:core` naming `LlamaEngine` back would be a cycle.
+
+**Sources are emitted before any answer text**, and that ordering is the feature rather than a layout choice. Retrieval finishes roughly ten seconds before the first token, so the panel fills the wait with something to read — and the citations are fixed before the model speaks rather than assembled to match what it said. The panel is always expanded; hiding it behind a disclosure would make Core principle #4 opt-in.
+
+Model warm at startup measured **1054 ms**, close to the embedder's ~600 ms, because mmap maps the gigabyte rather than reading it. Answers reach the first token in ~8–10 s with `MAX_CHUNKS = 6` and then stream at reading speed. That constant is the grounding-versus-latency dial and belongs in Phase 3's settings screen.
+
+Three outcomes are kept distinct because they need different responses: nothing cleared the relevance floor, no model chosen, and a model that failed to load. Conflating the last two sends a user with a corrupt GGUF back to the picker forever.
+
+**Three bugs, all from a test environment more permissive than production.** Worth listing together because they are one mistake wearing three costumes, and every one produced a green suite and a broken app:
+
+| what passed | what production did |
+| --- | --- |
+| `:llama`'s device tests, built with `useLegacyPackaging` | The app APK had `extractNativeLibs=false`; packaging options do not propagate from a library module, so `dlopen` would find no CPU backend |
+| A `/proc/self/fd/N` test using a file the app could open by path | A SAF grant covers the URI, not the path, so re-opening is denied — `EACCES` |
+| Generation tests with two-line prompts | `llama_decode` **aborts the process** when a batch exceeds `n_batch` (512), and a real RAG prompt is ~1,100 tokens |
+
+The last one is the sharpest: the first genuine question killed the app with `SIGABRT` inside `llama_context::decode` while every instrumented test passed. The prompt is now fed in `n_batch`-sized pieces, with a guard for prompts that cannot fit the window at all, since reaching `llama_decode` with one aborts rather than returns.
+
+A coda on the regression test written for that bug: its first version failed for the wrong reason, tripping the context-size guard because `token0 token1 …` tokenizes to about four tokens each. A test that fails for the wrong reason is only marginally better than one that passes for the wrong reason.
+
 #### Phase 2 decisions — settled
 
 **Runtime: Track A, llama.cpp via JNI.** Track B's portability payoff belongs to Phase 5, and its two routes both weaken on inspection: candle is immature for quantized ARM inference, and `llama-cpp-2` is Track A with a Rust layer on top. The RAG orchestration lives in Kotlin either way, so only the inference call sits behind the seam — which keeps the door open rather than nailing it shut.
@@ -383,7 +411,8 @@ Two operational traps, recorded because both cost real time. `-no-cnv` alone doe
 
 ### Phase 3 — Polish & real-world hardening
 - Paginated/streamed indexing so a large vault doesn't freeze the UI on first run.
-- Settings: model choice, quantization level, chunk size, folder exclude-patterns.
+- Settings: model choice, quantization level, chunk size, folder exclude-patterns. Also `MAX_CHUNKS` and the context window, which are now dials the user can feel — six chunks is ~8–10 s to first token, and fewer trades grounding for latency.
+- Conversation history in Ask. Each question currently clears the KV cache and starts clean, which is right for independent questions and wrong for follow-ups.
 - Share-sheet integration; consider a home-screen search widget.
 - Surface periodic runs in the UI. The ViewModel observes only `UNIQUE_MANUAL`, so a background pass is invisible and the Reindex button stays live during one.
 - Recalibrate `DEFAULT_MIN_SCORE` against a real vault, and consider showing near-threshold hits behind a "show weak matches" affordance rather than discarding them outright.
@@ -407,6 +436,7 @@ Two operational traps, recorded because both cost real time. `-no-cnv` alone doe
 - **Small-model hallucination survives RAG.** Grounding reduces it, doesn't eliminate it — the "sources used" panel is doing real work here, not decoration.
 - **SAF has no true background filesystem watch.** Periodic + manual reindex is the honest architecture, not a stopgap.
 - **First index of a large, long-lived vault will be slow and battery-heavy.** Needs a visible progress state; shouldn't run silently in the background on first launch.
+- **A test environment that can do more than production proves nothing about production.** Three separate bugs in Phase 2 came from this, each with a green suite and a broken app: an APK packaged differently from the test APK, a fixture the app could open by path where the real file needs a SAF grant, and a prompt short enough to stay under a batch limit the real one exceeds. When a test constructs its own inputs, it tends to construct ones it can satisfy. Ask what the real path crosses that the fixture does not.
 - **"Newer, more capable, more features" keeps measuring slower.** Q4_K_M lost to Q4_0; SVE2 lost to plain NEON+i8mm by 1.79x; ObjectBox, the most capable vector store, was ruled out on licensing. On-device, the sophisticated option is a hypothesis, not a default — and the wrong one produces correct output at half the speed, which no test catches.
 - **Recurring lesson, now five for five: a claim is only as good as your model of what produced it.** A debug build inflated cosine search 36x; characters stood in for tokens and hid 14% of the vault; a burst of three embeddings stood in for sustained load; two concurrent indexers stood in for one, inflating every indexing figure by 4x and inviting a thermal explanation for a contention problem; and a `.gitignore` comment stood in for the vault's actual contents, producing a confident and entirely wrong claim that the exit criteria were unmet. The last one is the sharpest, because it was written *into the section warning about this exact failure*. Documentation is a proxy too. Check the thing.
 - **Model licensing shapes your F-Droid listing.** Decide the EmbeddingGemma/MiniLM (and any LLM model) question with the anti-feature consequences in mind, not after the fact.
