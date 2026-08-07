@@ -17,6 +17,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -55,6 +56,10 @@ fun LoamScreen(viewModel: SearchViewModel) {
     val pickVault = rememberLauncherForActivityResult(
         ActivityResultContracts.OpenDocumentTree()
     ) { uri: Uri? -> uri?.let(viewModel::onVaultPicked) }
+
+    val pickModel = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocument()
+    ) { uri: Uri? -> uri?.let(viewModel::onModelPicked) }
 
     val opener = remember { NoteOpener(context) }
     var showOpenWith by remember { mutableStateOf(false) }
@@ -98,6 +103,13 @@ fun LoamScreen(viewModel: SearchViewModel) {
                 state = state,
                 onReindex = viewModel::reindex,
                 onChangeVault = { pickVault.launch(null) },
+            )
+
+            ModelStatusBar(
+                state = state,
+                // "*/*" because GGUF has no registered MIME type — filtering on
+                // one would hide the file the user came to pick.
+                onPickModel = { pickModel.launch(arrayOf("*/*")) },
             )
 
             HorizontalDivider()
@@ -196,6 +208,59 @@ private fun IndexStatusBar(
 }
 
 @OptIn(ExperimentalFoundationApi::class)
+/**
+ * The model's own row, rather than a third button beside Reindex and Change.
+ *
+ * Loading it is slow enough and fails in enough distinct ways that it needs
+ * somewhere to say so — and squeezing a third action into that row was already
+ * marginal at this width.
+ */
+@Composable
+private fun ModelStatusBar(
+    state: SearchViewModel.UiState,
+    onPickModel: () -> Unit,
+) {
+    val model = state.model
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(bottom = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.SpaceBetween,
+    ) {
+        Column(Modifier.weight(1f)) {
+            Text(
+                text = when (model) {
+                    SearchViewModel.ModelState.None -> "No answer model — search only"
+                    SearchViewModel.ModelState.Loading -> "Loading ${state.modelName ?: "model"}…"
+                    SearchViewModel.ModelState.Ready -> state.modelName ?: "Model ready"
+                    is SearchViewModel.ModelState.Failed -> "Model failed to load"
+                },
+                style = MaterialTheme.typography.bodySmall,
+                color = when (model) {
+                    is SearchViewModel.ModelState.Failed -> MaterialTheme.colorScheme.error
+                    SearchViewModel.ModelState.Ready -> MaterialTheme.colorScheme.onSurfaceVariant
+                    else -> MaterialTheme.colorScheme.onSurfaceVariant
+                },
+            )
+            if (model is SearchViewModel.ModelState.Failed) {
+                Text(
+                    text = model.message,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.error,
+                )
+            }
+        }
+        if (model is SearchViewModel.ModelState.Loading) {
+            CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
+            Spacer(Modifier.width(12.dp))
+        }
+        TextButton(onClick = onPickModel) {
+            Text(if (state.modelName == null) "Choose model" else "Change")
+        }
+    }
+}
+
 @Composable
 private fun ResultCard(
     result: SearchNotes.Result,

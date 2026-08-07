@@ -2,6 +2,7 @@ package dev.loam.core
 
 import android.content.Context
 import android.net.Uri
+import android.util.Log
 import dev.loam.core.domain.AskQuestion
 import dev.loam.core.domain.IndexStats
 import dev.loam.core.domain.IndexVault
@@ -74,9 +75,17 @@ class Loam private constructor(private val context: Context) {
         // by the OOM reaper on a phone with ~1 GB free.
         closeEngineLocked()
 
+        val start = System.nanoTime()
         return@withLock factory(uri).also {
             engine = it
             engineUri = uri
+            Log.i(
+                TAG,
+                "model open %s ctx=%d in %.0fms".format(
+                    it.info.name, it.info.contextTokens,
+                    (System.nanoTime() - start) / 1_000_000.0,
+                )
+            )
         }
     }
 
@@ -127,6 +136,7 @@ class Loam private constructor(private val context: Context) {
     }
 
     companion object {
+        private const val TAG = "Loam"
         private const val MODEL_ASSET = "model_qint8_arm64.onnx"
         private const val VOCAB_ASSET = "vocab.txt"
 

@@ -25,6 +25,13 @@ internal object LlamaNative {
 
     external fun loadModel(path: String, nCtx: Int, nThreads: Int): Long
 
+    /**
+     * The SAF path. `/proc/self/fd/N` cannot be used: opening it re-opens the
+     * underlying file, and a SAF grant covers the URI rather than the path, so
+     * the re-open is denied. Native side maps this descriptor directly.
+     */
+    external fun loadModelFd(fd: Int, nCtx: Int, nThreads: Int): Long
+
     external fun free(handle: Long)
 
     external fun contextTokens(handle: Long): Int

@@ -36,9 +36,28 @@ class SearchViewModel(app: Application) : AndroidViewModel(app) {
         val error: String? = null,
         val noteCount: Int = 0,
         val chunkCount: Int = 0,
+        val modelName: String? = null,
+        val model: ModelState = ModelState.None,
     )
 
-    private val _state = MutableStateFlow(UiState(hasVault = loam.vaultLocation.treeUri != null))
+    /**
+     * Distinguishing [None] from [Failed] is what stops a corrupt GGUF reading
+     * as "you haven't picked one yet" and bouncing the user back to the picker
+     * in a loop.
+     */
+    sealed interface ModelState {
+        data object None : ModelState
+        data object Loading : ModelState
+        data object Ready : ModelState
+        data class Failed(val message: String) : ModelState
+    }
+
+    private val _state = MutableStateFlow(
+        UiState(
+            hasVault = loam.vaultLocation.treeUri != null,
+            modelName = loam.modelLocation.displayName,
+        )
+    )
     val state: StateFlow<UiState> = _state.asStateFlow()
 
     private var searchJob: Job? = null
@@ -47,7 +66,56 @@ class SearchViewModel(app: Application) : AndroidViewModel(app) {
         observeIndexing()
         observeCounts()
         warmUp()
+        warmModel()
         ensurePeriodicIndexing()
+    }
+
+    /**
+     * Opens the LLM in the background at startup, for the same reason the
+     * embedder is warmed: the cost is unavoidable, so pay it before the user
+     * asks rather than in front of their first question.
+     *
+     * The two are not comparable in weight, though. Warming the embedder is
+     * ~600 ms and a 22 MB session; warming the LLM maps a gigabyte and builds a
+     * context. That is why it runs strictly after [warmUp] rather than
+     * alongside — search is the feature that works today, and it should not
+     * queue behind the model on a cold start.
+     *
+     * Failure is surfaced rather than swallowed. An unreadable or corrupt GGUF
+     * is a different problem from not having chosen one, and only the user can
+     * fix either.
+     */
+    private fun warmModel() {
+        if (loam.modelLocation.modelUri == null) return
+        _state.value = _state.value.copy(model = ModelState.Loading)
+        viewModelScope.launch {
+            _state.value = _state.value.copy(
+                model = runCatching { loam.llmEngine() }.fold(
+                    onSuccess = { if (it == null) ModelState.None else ModelState.Ready },
+                    onFailure = { ModelState.Failed(it.message ?: "Could not load model") },
+                )
+            )
+        }
+    }
+
+    fun onModelPicked(uri: Uri) {
+        loam.modelLocation.save(uri)
+        _state.value = _state.value.copy(
+            modelName = loam.modelLocation.displayName,
+            model = ModelState.Loading,
+        )
+        viewModelScope.launch {
+            // Drop the previous mapping first: Loam does this internally too,
+            // but doing it here means the old model is released while the
+            // picker is still on screen rather than during the new open.
+            loam.closeEngine()
+            _state.value = _state.value.copy(
+                model = runCatching { loam.llmEngine() }.fold(
+                    onSuccess = { if (it == null) ModelState.None else ModelState.Ready },
+                    onFailure = { ModelState.Failed(it.message ?: "Could not load model") },
+                )
+            )
+        }
     }
 
     /**

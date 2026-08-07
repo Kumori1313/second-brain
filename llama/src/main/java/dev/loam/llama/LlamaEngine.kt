@@ -114,11 +114,19 @@ class LlamaEngine private constructor(
         /**
          * Opens a GGUF that the user picked through SAF.
          *
-         * llama.cpp needs a filesystem path in order to mmap, and SAF hands
-         * back a `content://` URI. `/proc/self/fd/N` bridges the two: opening
-         * that path re-opens the underlying file, so the 1 GB of weights are
-         * mapped in place rather than copied into app storage. The descriptor
-         * has to outlive the model, which is why the engine holds it.
+         * llama.cpp needs something to mmap and SAF hands back a `content://`
+         * URI, so the descriptor is passed to native code and mapped directly.
+         *
+         * Note what does *not* work, because it looks like it should and fails
+         * only against a real SAF grant: bridging through `/proc/self/fd/N`.
+         * Opening that path re-opens the underlying file, which requires
+         * filesystem permission on it, and a SAF grant confers permission on
+         * the URI instead — so it fails with EACCES. It succeeds for files the
+         * app could already open by path, which is exactly why a test using one
+         * of those proves nothing.
+         *
+         * The descriptor must outlive the model, which is why the engine holds
+         * it and closes it last.
          */
         fun open(
             context: Context,
@@ -133,7 +141,7 @@ class LlamaEngine private constructor(
             }.getOrNull() ?: throw ModelLoadException("Cannot open model file: $model")
 
             val handle = try {
-                LlamaNative.loadModel("/proc/self/fd/${fd.fd}", contextTokens, threads)
+                LlamaNative.loadModelFd(fd.fd, contextTokens, threads)
             } catch (e: Throwable) {
                 fd.closeQuietly()
                 throw e
@@ -143,14 +151,24 @@ class LlamaEngine private constructor(
                 throw ModelLoadException("llama.cpp could not load: $model")
             }
 
-            return LlamaEngine(
-                handle = handle,
-                fd = fd,
-                info = ModelInfo(
-                    name = LlamaNative.describe(handle).ifBlank { "GGUF model" },
-                    contextTokens = LlamaNative.contextTokens(handle),
-                ),
-            )
+            return LlamaEngine(handle, fd, infoFor(handle))
+        }
+
+        /**
+         * For a descriptor the caller already holds and will keep open for the
+         * engine's lifetime. [open] is the usual entry point; this exists so
+         * the descriptor path can be exercised directly in tests.
+         */
+        fun openFd(
+            context: Context,
+            fd: Int,
+            contextTokens: Int = DEFAULT_CONTEXT_TOKENS,
+            threads: Int = DEFAULT_THREADS,
+        ): LlamaEngine {
+            LlamaNative.backendInit(context.applicationInfo.nativeLibraryDir)
+            val handle = LlamaNative.loadModelFd(fd, contextTokens, threads)
+            if (handle == 0L) throw ModelLoadException("llama.cpp could not load descriptor $fd")
+            return LlamaEngine(handle, null, infoFor(handle))
         }
 
         /** For a model already on a real path, e.g. copied into app storage. */
@@ -163,15 +181,13 @@ class LlamaEngine private constructor(
             LlamaNative.backendInit(context.applicationInfo.nativeLibraryDir)
             val handle = LlamaNative.loadModel(path, contextTokens, threads)
             if (handle == 0L) throw ModelLoadException("llama.cpp could not load: $path")
-            return LlamaEngine(
-                handle = handle,
-                fd = null,
-                info = ModelInfo(
-                    name = LlamaNative.describe(handle).ifBlank { "GGUF model" },
-                    contextTokens = LlamaNative.contextTokens(handle),
-                ),
-            )
+            return LlamaEngine(handle, null, infoFor(handle))
         }
+
+        private fun infoFor(handle: Long) = ModelInfo(
+            name = LlamaNative.describe(handle).ifBlank { "GGUF model" },
+            contextTokens = LlamaNative.contextTokens(handle),
+        )
 
         private fun Closeable.closeQuietly() = runCatching { close() }
     }

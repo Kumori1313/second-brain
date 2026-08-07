@@ -80,35 +80,47 @@ class LlamaEngineTest {
     }
 
     @Test
-    fun loadsThroughAFileDescriptorPath() {
+    fun loadsFromAnOpenDescriptor() {
         val model = requireModel()
 
-        // The mechanism SAF forces on us: llama.cpp needs a path to mmap and a
-        // content:// URI has none, so the descriptor is bridged through
-        // /proc/self/fd/N. This is the assumption the whole sideload design
-        // rests on — if mmap refuses it, first run needs a 1 GB copy instead.
-        val pfd = ParcelFileDescriptor.open(model, ParcelFileDescriptor.MODE_READ_ONLY)
-        pfd.use {
-            LlamaEngine.openPath(
-                context,
-                "/proc/self/fd/${it.fd}",
-                contextTokens = 512,
-            ).use { engine ->
+        // llama.cpp maps fileno(fp) from an already-open handle, which is what
+        // lets a SAF-picked model be used without copying it anywhere.
+        ParcelFileDescriptor.open(model, ParcelFileDescriptor.MODE_READ_ONLY).use { pfd ->
+            LlamaEngine.openFd(context, pfd.fd, contextTokens = 512).use { engine ->
                 assertTrue(engine.info.name.isNotBlank())
             }
         }
     }
 
     @Test
-    fun loadsFromAContentResolverUri() {
+    fun loadsThroughTheContentResolver() {
         val model = requireModel()
 
-        // file:// goes through the same ContentResolver path a SAF content://
-        // URI would, without needing a user to pick anything.
         LlamaEngine.open(context, Uri.fromFile(model), contextTokens = 512).use { engine ->
             assertTrue(engine.info.contextTokens > 0)
         }
     }
+
+    /*
+     * What these two tests cannot prove, recorded because an earlier version of
+     * this file claimed otherwise.
+     *
+     * The original test loaded "/proc/self/fd/N" and passed, and was written up
+     * as proving the SAF design worked. It proved nothing of the sort. Opening
+     * that path re-opens the underlying file, which needs filesystem permission
+     * on it — and the file here is one the app can already open directly, so
+     * the re-open succeeded. Against a real SAF grant, where permission is held
+     * on the URI and not the path, the same call fails:
+     *
+     *     gguf_init_from_file: failed to open GGUF file '/proc/self/fd/96'
+     *     (Permission denied)
+     *
+     * A test fixture the app has full access to cannot exercise a permission
+     * boundary. Both tests above have the same limitation and are kept for what
+     * they do cover — that the descriptor path loads and maps at all. The SAF
+     * case itself was verified by picking a real file through the system picker
+     * on device, and only that verification counts for it.
+     */
 
     @Test
     fun generatesTextThatArrivesInFragments() = runBlocking {

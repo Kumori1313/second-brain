@@ -8,7 +8,9 @@
 #include <jni.h>
 #include <android/log.h>
 
+#include <cstdio>
 #include <string>
+#include <unistd.h>
 #include <vector>
 
 #include "llama.h"
@@ -23,6 +25,10 @@ namespace {
 struct Session {
     llama_model   * model = nullptr;
     llama_context * ctx   = nullptr;
+    // Only set when loaded from a descriptor. llama_file borrows a FILE* with
+    // owns_fp(false), so closing it is ours to do — after the model, since the
+    // loader may still read through it.
+    FILE          * fp    = nullptr;
 };
 
 std::string to_string(JNIEnv * env, jstring s) {
@@ -35,6 +41,33 @@ std::string to_string(JNIEnv * env, jstring s) {
 
 Session * as_session(jlong handle) {
     return reinterpret_cast<Session *>(handle);
+}
+
+llama_model_params default_model_params() {
+    llama_model_params mparams = llama_model_default_params();
+    // mmap, explicitly, and never mlock. Mapping keeps the weights out of the
+    // app's heap and lets the kernel evict pages under pressure — the
+    // difference between a 1 GB allocation and a 1 GB file mapping on a phone
+    // with ~1 GB free. mlock would pin all of it and invite the OOM killer.
+    mparams.load_mode = LLAMA_LOAD_MODE_MMAP;
+    return mparams;
+}
+
+/** Builds the context and wraps everything up, or cleans up and returns null. */
+Session * finish_session(llama_model * model, FILE * fp, int n_ctx, int n_threads) {
+    llama_context_params cparams = llama_context_default_params();
+    cparams.n_ctx           = (uint32_t) n_ctx;
+    cparams.n_threads       = n_threads;
+    cparams.n_threads_batch = n_threads;
+    cparams.n_batch         = 512;
+
+    llama_context * ctx = llama_init_from_model(model, cparams);
+    if (ctx == nullptr) {
+        llama_model_free(model);
+        if (fp != nullptr) fclose(fp);
+        return nullptr;
+    }
+    return new Session{model, ctx, fp};
 }
 
 void throw_load_error(JNIEnv * env, const std::string & message) {
@@ -97,34 +130,71 @@ Java_dev_loam_llama_LlamaNative_loadModel(
 ) {
     const std::string path = to_string(env, pathJ);
 
-    llama_model_params mparams = llama_model_default_params();
-    // mmap, explicitly, and never mlock. Mapping keeps the weights out of the
-    // app's heap and lets the kernel evict pages under pressure — the
-    // difference between a 1 GB allocation and a 1 GB file mapping on a phone
-    // with ~1 GB free. mlock would pin all of it and invite the OOM killer.
-    mparams.load_mode = LLAMA_LOAD_MODE_MMAP;
-
-    llama_model * model = llama_model_load_from_file(path.c_str(), mparams);
+    llama_model * model = llama_model_load_from_file(path.c_str(), default_model_params());
     if (model == nullptr) {
         throw_load_error(env, "Could not load model: " + path);
         return 0;
     }
 
-    llama_context_params cparams = llama_context_default_params();
-    cparams.n_ctx       = (uint32_t) nCtx;
-    cparams.n_threads   = nThreads;
-    cparams.n_batch     = 512;
-    cparams.n_threads_batch = nThreads;
-
-    llama_context * ctx = llama_init_from_model(model, cparams);
-    if (ctx == nullptr) {
-        llama_model_free(model);
+    Session * session = finish_session(model, nullptr, nCtx, nThreads);
+    if (session == nullptr) {
         throw_load_error(env, "Could not create context for: " + path);
         return 0;
     }
-
-    auto * session = new Session{model, ctx};
     LOGI("loaded %s (n_ctx=%d, threads=%d)", path.c_str(), nCtx, nThreads);
+    return reinterpret_cast<jlong>(session);
+}
+
+/**
+ * Loads from an already-open descriptor.
+ *
+ * This is what SAF actually requires, and the reason the obvious approach
+ * fails. llama.cpp wants a path to mmap, and a `content://` URI has none, so
+ * the tempting bridge is `/proc/self/fd/N` — but opening that path *re-opens*
+ * the underlying file, which needs filesystem permission on it. A SAF grant
+ * confers permission on the URI, not the path, so the re-open is denied:
+ *
+ *     gguf_init_from_file: failed to open GGUF file '/proc/self/fd/96'
+ *     (Permission denied)
+ *
+ * `llama_model_load_from_file_ptr` takes a `FILE *` instead and mmaps
+ * `fileno(fp)` directly, so the descriptor SAF already handed us is mapped
+ * without ever being reopened. No copy into app storage, and no 1 GB of heap.
+ *
+ * The descriptor is duped because the caller's ParcelFileDescriptor owns
+ * theirs, and llama_file borrows the FILE* without taking ownership — so this
+ * side closes exactly what it opened, and neither closes the other's.
+ */
+JNIEXPORT jlong JNICALL
+Java_dev_loam_llama_LlamaNative_loadModelFd(
+    JNIEnv * env, jclass, jint fd, jint nCtx, jint nThreads
+) {
+    const int duped = dup(fd);
+    if (duped < 0) {
+        throw_load_error(env, "Could not duplicate model file descriptor");
+        return 0;
+    }
+
+    FILE * fp = fdopen(duped, "rb");
+    if (fp == nullptr) {
+        close(duped);
+        throw_load_error(env, "Could not open model file descriptor");
+        return 0;
+    }
+
+    llama_model * model = llama_model_load_from_file_ptr(fp, default_model_params());
+    if (model == nullptr) {
+        fclose(fp);
+        throw_load_error(env, "Could not load model from descriptor");
+        return 0;
+    }
+
+    Session * session = finish_session(model, fp, nCtx, nThreads);
+    if (session == nullptr) {
+        throw_load_error(env, "Could not create context for model descriptor");
+        return 0;
+    }
+    LOGI("loaded from fd (n_ctx=%d, threads=%d)", nCtx, nThreads);
     return reinterpret_cast<jlong>(session);
 }
 
@@ -134,6 +204,9 @@ Java_dev_loam_llama_LlamaNative_free(JNIEnv *, jclass, jlong handle) {
     if (s == nullptr) return;
     if (s->ctx   != nullptr) llama_free(s->ctx);
     if (s->model != nullptr) llama_model_free(s->model);
+    // After the model: the loader reads through this handle, and llama_file
+    // borrows it without owning it.
+    if (s->fp    != nullptr) fclose(s->fp);
     delete s;
 }
 
