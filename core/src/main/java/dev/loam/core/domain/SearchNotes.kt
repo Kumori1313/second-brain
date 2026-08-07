@@ -28,6 +28,15 @@ class SearchNotes(
     private val embedderFactory: () -> Embedder,
 ) {
 
+    /**
+     * @param snippet trimmed for display in the results list.
+     * @param text the whole chunk, as indexed. Carried alongside the snippet
+     *   because [dev.loam.core.domain.AskQuestion] feeds chunks to a model and
+     *   must not send it a truncated one — an answer grounded in the first 320
+     *   characters of its evidence would look sound and be wrong. Cheap to keep:
+     *   a full result page is a few tens of kB, against a second query and a
+     *   second decrypt to fetch the same rows again.
+     */
     data class Result(
         val chunkId: Long,
         val score: Float,
@@ -35,6 +44,7 @@ class SearchNotes(
         val relativePath: String,
         val headingPath: String,
         val snippet: String,
+        val text: String,
         val uri: String,
     )
 
@@ -134,6 +144,7 @@ class SearchNotes(
                     relativePath = row.relativePath,
                     headingPath = row.headingPath,
                     snippet = row.text.trim().take(SNIPPET_CHARS),
+                    text = row.text,
                     uri = row.uri,
                 )
             }
