@@ -19,7 +19,20 @@ android {
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         externalNativeBuild {
             cmake {
-                arguments += listOf("-DANDROID_STL=c++_shared")
+                arguments += listOf(
+                    "-DANDROID_STL=c++_shared",
+                    // 16 KB page alignment. Android 15+ can run with 16 KB
+                    // pages, and a library whose LOAD segments are aligned to
+                    // 4 KB will not load there at all — the app does not
+                    // degrade, it fails. Every prebuilt dependency here
+                    // (ONNX Runtime, SQLCipher, libc++) already ships aligned;
+                    // only what this module compiles was not.
+                    //
+                    // Opt-in on NDK r27 and the default from r28. The pin stays
+                    // at r27 because every Phase 2 measurement was taken with
+                    // it, and this flag changes linking rather than codegen.
+                    "-DANDROID_SUPPORT_FLEXIBLE_PAGE_SIZES=ON",
+                )
             }
         }
     }
