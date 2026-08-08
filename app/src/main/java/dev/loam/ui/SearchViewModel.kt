@@ -10,6 +10,7 @@ import androidx.work.WorkManager
 import dev.loam.core.Loam
 import dev.loam.core.domain.AskQuestion
 import dev.loam.core.domain.SearchNotes
+import dev.loam.core.domain.IndexingRules
 import dev.loam.core.domain.Tuning
 import dev.loam.core.store.KeyProtection
 import dev.loam.work.IndexRunLog
@@ -45,6 +46,7 @@ class SearchViewModel(app: Application) : AndroidViewModel(app) {
         val model: ModelState = ModelState.None,
         val ask: AskState = AskState(),
         val tuning: Tuning = Tuning(),
+        val rules: IndexingRules = IndexingRules(),
         /** Last path segment of the vault URI — enough to recognise it. */
         val vaultName: String? = null,
         val keyProtection: KeyProtection = KeyProtection.OFF,
@@ -110,6 +112,7 @@ class SearchViewModel(app: Application) : AndroidViewModel(app) {
             hasVault = loam.vaultLocation.treeUri != null,
             modelName = loam.modelLocation.displayName,
             tuning = loam.settings.tuning,
+            rules = loam.settings.indexing,
             vaultName = loam.vaultLocation.treeUri?.lastPathSegment,
             keyProtection = loam.settings.keyProtection,
         )
@@ -193,7 +196,30 @@ class SearchViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    fun onResetTuning() = onTuningChange(Tuning())
+    fun onResetTuning() {
+        onTuningChange(Tuning())
+        onIndexingRulesChange(IndexingRules())
+    }
+
+    /**
+     * Saves the rules and immediately reindexes, because they are only true of
+     * the index once it has been rebuilt.
+     *
+     * Applied as a unit rather than per keystroke or per slider tick: either of
+     * these costs a full pass over the vault, and a setting that quietly
+     * launched one on every character would be unusable.
+     *
+     * A chunk-size change wipes and re-embeds everything — about 150 s for this
+     * vault. Excludes are cheaper: an excluded note simply stops being found by
+     * the walk, and the existing stale sweep deletes it.
+     */
+    fun onIndexingRulesChange(rules: IndexingRules) {
+        loam.settings.indexing = rules
+        // Read back rather than trusting the input: Settings clamps chunk size
+        // to the range it will honour and trims the pattern text.
+        _state.value = _state.value.copy(rules = loam.settings.indexing)
+        reindex()
+    }
 
     /**
      * Reacts to a completed protection change, and keeps the periodic reindex

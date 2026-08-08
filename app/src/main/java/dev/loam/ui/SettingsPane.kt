@@ -12,22 +12,34 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.Button
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import dev.loam.core.domain.IndexingRules
 import dev.loam.core.domain.Tuning
 import dev.loam.core.store.KeyProtection
 import kotlin.math.roundToInt
+
+/** Addressable so a test can move the one slider that costs a rebuild. */
+const val CHUNK_SIZE_SLIDER = "chunkSizeSlider"
 
 /**
  * The constants this project measured its way to, made adjustable.
@@ -36,9 +48,10 @@ import kotlin.math.roundToInt
  * tradeoffs with numbers attached, and the numbers came from this device. A
  * slider labelled only "chunks per answer" would be a worse setting than none.
  *
- * Only settings that take effect without reindexing appear here. Chunk size and
- * exclude patterns would invalidate the stored index, which makes them a
- * different kind of setting and one that needs a reindex flow first.
+ * Settings split into two kinds and the pane says which is which. Most take
+ * effect on the next query. The two under "Indexing" make what is already
+ * stored wrong, so they are staged and applied together behind one button that
+ * says what it will cost.
  */
 @Composable
 fun SettingsPane(
@@ -46,6 +59,8 @@ fun SettingsPane(
     tuning: Tuning,
     onTuningChange: (Tuning) -> Unit,
     onResetTuning: () -> Unit,
+    rules: IndexingRules,
+    onRulesChange: (IndexingRules) -> Unit,
     onPickVault: () -> Unit,
     onPickModel: () -> Unit,
     onReindex: () -> Unit,
@@ -161,6 +176,15 @@ fun SettingsPane(
 
         HorizontalDivider(Modifier.padding(vertical = 8.dp))
 
+        IndexingSection(
+            rules = rules,
+            noteCount = state.noteCount,
+            indexing = state.indexing,
+            onRulesChange = onRulesChange,
+        )
+
+        HorizontalDivider(Modifier.padding(vertical = 8.dp))
+
         SectionTitle("Index protection")
         Text(
             "The index stores your note text verbatim, so it is about as " +
@@ -231,6 +255,103 @@ private fun ProtectionChoice(
             Text(label, style = MaterialTheme.typography.bodyMedium)
             Text(
                 detail,
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+    }
+}
+
+/**
+ * The two settings that cost a rebuild, staged behind one Apply.
+ *
+ * Staged rather than live because each keystroke in the pattern box and each
+ * tick of the slider would otherwise start a full pass over the vault. The
+ * button is the point of the section: it says what the change costs before it
+ * is made, and nothing happens until it is pressed.
+ */
+@Composable
+private fun IndexingSection(
+    rules: IndexingRules,
+    noteCount: Int,
+    indexing: Boolean,
+    onRulesChange: (IndexingRules) -> Unit,
+) {
+    // Keyed on the stored value so an applied change — or a reset from
+    // elsewhere in this pane — replaces what is staged instead of leaving the
+    // editor showing something that is no longer pending.
+    var patterns by remember(rules.excludePatterns) { mutableStateOf(rules.excludePatterns) }
+    var tokens by remember(rules.chunkTokens) { mutableIntStateOf(rules.chunkTokens) }
+
+    val rebuilds = tokens != rules.chunkTokens
+    val dirty = rebuilds || patterns.trim() != rules.excludePatterns
+
+    SectionTitle("Indexing")
+    Text(
+        "These change what is in the index, so they only take effect once it " +
+            "has been rebuilt.",
+        style = MaterialTheme.typography.labelSmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+    )
+    Spacer(Modifier.height(12.dp))
+
+    Text("Exclude", style = MaterialTheme.typography.bodyLarge)
+    OutlinedTextField(
+        value = patterns,
+        onValueChange = { patterns = it },
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(top = 8.dp),
+        placeholder = { Text("templates/\n*.excalidraw.md") },
+        textStyle = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
+        minLines = 3,
+    )
+    Text(
+        "One pattern per line, matched against the path inside your vault. A " +
+            "name on its own matches that file anywhere; a trailing slash takes " +
+            "a folder and everything under it. Dot-folders like .obsidian and " +
+            ".trash are always skipped.",
+        style = MaterialTheme.typography.labelSmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+        modifier = Modifier.padding(top = 4.dp),
+    )
+
+    Spacer(Modifier.height(16.dp))
+
+    Tunable(
+        label = "Chunk size",
+        value = "$tokens tokens",
+        detail = "How much text is embedded as one unit. Measured on a " +
+            "392-note vault: 200 gives 5,853 chunks, 240 gives 5,297, 254 " +
+            "gives 5,176. Smaller is more precisely targeted and cheaper to " +
+            "embed; larger carries more context into an answer. The ceiling is " +
+            "the model's own window — above it the text would be truncated away.",
+    ) {
+        Slider(
+            // Tagged because three sliders share this pane and a test that
+            // addressed them by position would pass for the wrong one the day
+            // a section moves.
+            modifier = Modifier.testTag(CHUNK_SIZE_SLIDER),
+            value = tokens.toFloat(),
+            onValueChange = { tokens = it.roundToInt() },
+            valueRange = IndexingRules.CHUNK_RANGE.first.toFloat()..
+                IndexingRules.CHUNK_RANGE.last.toFloat(),
+        )
+    }
+
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Button(
+            onClick = { onRulesChange(IndexingRules(patterns, tokens)) },
+            enabled = dirty && !indexing,
+        ) { Text("Apply and reindex") }
+        Spacer(Modifier.width(12.dp))
+        if (dirty) {
+            Text(
+                if (rebuilds) {
+                    "Re-embeds all $noteCount notes — minutes, not seconds."
+                } else {
+                    "Next pass drops what no longer matches."
+                },
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )

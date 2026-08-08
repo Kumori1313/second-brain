@@ -2,6 +2,7 @@ package dev.loam.settings
 
 import android.content.Context
 import androidx.test.platform.app.InstrumentationRegistry
+import dev.loam.core.domain.IndexingRules
 import dev.loam.core.domain.Settings
 import dev.loam.core.domain.Tuning
 import org.junit.After
@@ -89,6 +90,49 @@ class TuningPersistenceTest {
         assertTrue(prefs.contains("chunks_per_answer"))
         assertFalse(prefs.contains("relevance_floor"))
         assertFalse(prefs.contains("context_tokens"))
+    }
+
+    @Test
+    fun excludePatternsSurviveAndClearProperly() {
+        settings().indexing = IndexingRules(excludePatterns = "templates/\njournal/")
+        assertEquals("templates/\njournal/", settings().indexing.excludePatterns)
+
+        settings().indexing = IndexingRules(excludePatterns = "   \n  ")
+
+        // Whitespace is not a pattern. Storing it would leave ExcludeRules
+        // parsing blank lines forever and the box looking non-empty.
+        assertFalse(prefs.contains("exclude_patterns"))
+        assertEquals("", settings().indexing.excludePatterns)
+    }
+
+    @Test
+    fun theChunkSizeFollowsTheSameStoreOnlyDeviationsRule() {
+        settings().indexing = IndexingRules(chunkTokens = 200)
+        assertTrue(prefs.contains("chunk_tokens"))
+
+        settings().indexing = IndexingRules()
+
+        assertFalse(prefs.contains("chunk_tokens"))
+    }
+
+    @Test
+    fun anOutOfRangeChunkSizeIsClamped() {
+        settings().indexing = IndexingRules(chunkTokens = 4096)
+
+        // The ceiling is the model's window. Storing more would silently
+        // truncate every oversized chunk at embed time.
+        assertEquals(IndexingRules.CHUNK_RANGE.last, settings().indexing.chunkTokens)
+    }
+
+    @Test
+    fun theChunkingFingerprintIsRecordedSeparatelyFromTheSetting() {
+        settings().indexedChunking = "v1:240"
+        settings().indexing = IndexingRules(chunkTokens = 200)
+
+        // Changing the setting must not look like the index was rebuilt — the
+        // gap between the two is the signal IndexVault acts on.
+        assertEquals("v1:240", settings().indexedChunking)
+        assertEquals("v1:200", settings().indexing.chunkingFingerprint())
     }
 
     @Test

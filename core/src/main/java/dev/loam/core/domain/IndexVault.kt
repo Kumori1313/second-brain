@@ -9,6 +9,7 @@ import dev.loam.core.store.ChunkEntity
 import dev.loam.core.store.LoamDatabase
 import dev.loam.core.store.NoteEntity
 import dev.loam.core.vault.Chunker
+import dev.loam.core.vault.ExcludeRules
 import dev.loam.core.vault.TokenCounter
 import dev.loam.core.vault.VaultReader
 import kotlinx.coroutines.currentCoroutineContext
@@ -30,6 +31,11 @@ class IndexVault(
     private val context: Context,
     private val embedderFactory: () -> Embedder,
     private val tokenCounter: TokenCounter,
+    /**
+     * Read at the start of each pass rather than captured, so a rule the user
+     * changed takes effect on the next reindex instead of the next launch.
+     */
+    private val settings: Settings,
 ) {
 
     /** Held for the duration of a pass; see [run] for why the second one skips. */
@@ -119,11 +125,33 @@ class IndexVault(
         val dao = LoamDatabase.get(context).dao()
         val reader = VaultReader(context)
 
+        val rules = settings.indexing
+        val exclude = ExcludeRules.parse(rules.excludePatterns)
+
+        // Chunking changed, so every stored chunk is a split of the old shape.
+        // Nothing about a note's (mtime, size) says so, which is exactly why
+        // this is checked here rather than left to the incremental sweep: the
+        // fingerprints all still match and not one note would be revisited.
+        val chunking = rules.chunkingFingerprint()
+        // An absent record means "built before chunking was configurable", not
+        // "unknown" — back then it was always the compiled-in default. Treating
+        // it as unknown would make every existing install pay one full rebuild
+        // to arrive at the shape it already had. Measured on this vault, that
+        // is 285 s of re-embedding for no change.
+        val indexed = settings.indexedChunking ?: IndexingRules().chunkingFingerprint()
+        val rebuild = indexed != chunking
+        if (rebuild) {
+            Log.i(TAG, "chunking changed to $chunking — rebuilding")
+            dao.clearAll()
+        }
+
         val walkStart = System.nanoTime()
-        val found = reader.walk(treeUri) { onProgress(Progress.Walking(it)) }
+        val found = reader.walk(treeUri, exclude) { onProgress(Progress.Walking(it)) }
         t.walkMs = (System.nanoTime() - walkStart) / 1_000_000
 
         // Fingerprint by (mtime, size) — see NoteEntity for why not a hash.
+        // Read after any rebuild wipe, or the pass would think it already had
+        // everything it just deleted.
         val known = dao.allNotes().associateBy { it.uri }
         val foundUris = found.mapTo(HashSet()) { it.uri.toString() }
 
@@ -161,7 +189,11 @@ class IndexVault(
                     t.readMs += (System.nanoTime() - readStart) / 1_000_000
 
                     val chunkStart = System.nanoTime()
-                    val chunks = Chunker.chunk(text, tokenCounter)
+                    val chunks = Chunker.chunk(
+                        text,
+                        tokenCounter,
+                        targetTokens = rules.chunkTokens,
+                    )
                     t.chunkMs += (System.nanoTime() - chunkStart) / 1_000_000
 
                     val entity = NoteEntity(
@@ -230,6 +262,13 @@ class IndexVault(
                 " | thread=${Thread.currentThread().name} " +
                 "prio=${android.os.Process.getThreadPriority(android.os.Process.myTid())}"
         )
+
+        // Recorded only now, and only on the path that reaches here. A pass
+        // cancelled or thrown out of leaves the old fingerprint in place and is
+        // retried, rather than banking a rebuild that got half way — which
+        // nothing downstream could detect, since a half-rebuilt index has
+        // perfectly valid-looking rows in two different shapes.
+        settings.indexedChunking = chunking
 
         return Progress.Done(
             notesIndexed = changed.size,

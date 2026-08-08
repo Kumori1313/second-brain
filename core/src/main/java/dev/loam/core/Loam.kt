@@ -33,7 +33,7 @@ class Loam private constructor(private val context: Context) {
     val isIndexLocked: Boolean
         get() = DatabaseKey.isLocked(context)
     val indexStats by lazy { IndexStats(context) }
-    val indexVault by lazy { IndexVault(context, ::newEmbedder, tokenCounter) }
+    val indexVault by lazy { IndexVault(context, ::newEmbedder, tokenCounter, settings) }
     val searchNotes by lazy {
         SearchNotes(context, ::newEmbedder) { settings.tuning.relevanceFloor }
     }

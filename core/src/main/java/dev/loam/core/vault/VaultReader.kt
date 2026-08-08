@@ -32,7 +32,11 @@ class VaultReader(private val context: Context) {
      * @param onProgress called with the running count of markdown files found,
      *   so a long walk can report something other than a spinner.
      */
-    fun walk(treeUri: Uri, onProgress: (Int) -> Unit = {}): List<NoteFile> {
+    fun walk(
+        treeUri: Uri,
+        exclude: ExcludeRules = ExcludeRules.NONE,
+        onProgress: (Int) -> Unit = {},
+    ): List<NoteFile> {
         val resolver = context.contentResolver
         val projection = arrayOf(
             DocumentsContract.Document.COLUMN_DOCUMENT_ID,
@@ -62,12 +66,17 @@ class VaultReader(private val context: Context) {
                         // Skip dot-directories: .obsidian holds config, themes,
                         // and plugin code, none of which is the user's writing,
                         // and .trash holds notes they deleted on purpose.
-                        if (!name.startsWith(".")) {
+                        // Skipped rather than walked-and-filtered: enumeration
+                        // is the expensive half — one ContentResolver query per
+                        // node — so not descending costs nothing and filtering
+                        // afterwards costs the whole subtree.
+                        if (!name.startsWith(".") && !exclude.excludesDirectory("$prefix$name")) {
                             pending.addLast(docId to "$prefix$name/")
                         }
                         continue
                     }
                     if (!name.endsWith(MARKDOWN_EXTENSION, ignoreCase = true)) continue
+                    if (exclude.excludesFile("$prefix$name")) continue
 
                     notes.add(
                         NoteFile(

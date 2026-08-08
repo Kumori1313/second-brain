@@ -2,6 +2,7 @@ package dev.loam.core.domain
 
 import android.content.Context
 import dev.loam.core.store.DatabaseKey
+import dev.loam.core.vault.Chunker
 import dev.loam.core.store.KeyProtection
 
 /**
@@ -12,9 +13,9 @@ import dev.loam.core.store.KeyProtection
  * it, so the values that can be changed without reindexing are exposed rather
  * than compiled in.
  *
- * Deliberately only those three. Chunk size and exclude patterns would each
- * invalidate the stored index, which makes them a different kind of setting —
- * one that costs a reindex — and they are left for when that flow exists.
+ * Deliberately only those three. Chunk size and exclude patterns are a
+ * different kind of setting — either one makes what is already stored wrong —
+ * so they live in [IndexingRules] and are applied through a rebuild.
  */
 data class Tuning(
     /**
@@ -54,6 +55,51 @@ data class Tuning(
         val CHUNKS_RANGE = 1..12
         val CONTEXT_CHOICES = listOf(2048, 4096, 8192)
         val FLOOR_RANGE = 0.10f..0.60f
+    }
+}
+
+/**
+ * The two settings that invalidate the stored index.
+ *
+ * Kept apart from [Tuning] because the difference is the whole point: a
+ * [Tuning] change takes effect on the next query, while either of these makes
+ * what is already stored wrong. Changing them costs a reindex, so they are
+ * applied deliberately rather than as you drag a slider.
+ */
+data class IndexingRules(
+    /** One pattern per line. See [dev.loam.core.vault.ExcludeRules]. */
+    val excludePatterns: String = "",
+
+    /**
+     * The soft size a chunk grows toward, in tokens.
+     *
+     * Swept against the 392-note vault: 200 gives 5,853 chunks averaging 144
+     * tokens, 240 gives 5,297 averaging 156, 254 gives 5,176 averaging 159.
+     * Smaller chunks are more precisely targeted and cheaper to embed; larger
+     * ones carry more context into an answer and, being longer, score
+     * moderately against any query — which is part of why the relevance floor
+     * cannot separate the score bands cleanly.
+     */
+    val chunkTokens: Int = Chunker.DEFAULT_TARGET_TOKENS,
+) {
+    /**
+     * Identifies the settings that change how text is split.
+     *
+     * Excludes are deliberately absent: a note that stops matching the walk
+     * simply stops being found, and the existing stale-note sweep deletes it.
+     * Only chunking invalidates rows that are still legitimately there.
+     */
+    fun chunkingFingerprint(): String = "v1:$chunkTokens"
+
+    companion object {
+        /**
+         * Floor of 96 because overlap is 32 tokens and a target near it makes
+         * every chunk mostly a copy of its neighbour. Ceiling is the model's
+         * 256-token window less the two reserved for `[CLS]` and `[SEP]` —
+         * above that the embedder truncates, which is the defect that cost 14%
+         * of this vault once already.
+         */
+        val CHUNK_RANGE = 96..(Chunker.DEFAULT_MAX_TOKENS - 2)
     }
 }
 
@@ -117,6 +163,40 @@ class Settings(private val context: Context) {
                 .apply()
         }
 
+    /** Same store-only-deviations rule as [tuning]; same reason. */
+    var indexing: IndexingRules
+        get() = IndexingRules(
+            excludePatterns = prefs.getString(KEY_EXCLUDES, null) ?: "",
+            chunkTokens = prefs.getInt(KEY_CHUNK_TOKENS, Chunker.DEFAULT_TARGET_TOKENS),
+        )
+        set(value) {
+            val tokens = value.chunkTokens.coerceIn(IndexingRules.CHUNK_RANGE)
+            val excludes = value.excludePatterns.trim()
+            prefs.edit()
+                .apply {
+                    if (excludes.isEmpty()) remove(KEY_EXCLUDES) else putString(KEY_EXCLUDES, excludes)
+                    if (tokens == Chunker.DEFAULT_TARGET_TOKENS) remove(KEY_CHUNK_TOKENS)
+                    else putInt(KEY_CHUNK_TOKENS, tokens)
+                }
+                .apply()
+        }
+
+    /**
+     * The chunking the stored index was actually built with.
+     *
+     * Written only after a pass completes, so an interrupted rebuild is retried
+     * rather than recorded as done — the alternative leaves half the vault
+     * chunked one way and half the other, which nothing downstream could detect.
+     */
+    var indexedChunking: String?
+        get() = prefs.getString(KEY_INDEXED_CHUNKING, null)
+        set(value) {
+            prefs.edit().apply {
+                if (value == null) remove(KEY_INDEXED_CHUNKING)
+                else putString(KEY_INDEXED_CHUNKING, value)
+            }.apply()
+        }
+
     fun reset() {
         prefs.edit().clear().apply()
     }
@@ -126,5 +206,8 @@ class Settings(private val context: Context) {
         const val KEY_CHUNKS = "chunks_per_answer"
         const val KEY_CONTEXT = "context_tokens"
         const val KEY_FLOOR = "relevance_floor"
+        const val KEY_EXCLUDES = "exclude_patterns"
+        const val KEY_CHUNK_TOKENS = "chunk_tokens"
+        const val KEY_INDEXED_CHUNKING = "indexed_chunking"
     }
 }
