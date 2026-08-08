@@ -1,6 +1,8 @@
 package dev.loam.core.domain
 
 import android.content.Context
+import dev.loam.core.store.DatabaseKey
+import dev.loam.core.store.KeyProtection
 
 /**
  * The constants this project measured its way to, made adjustable.
@@ -56,7 +58,16 @@ data class Tuning(
     }
 }
 
-class Settings(context: Context) {
+class Settings(private val context: Context) {
+
+    /**
+     * Delegated to [DatabaseKey] rather than stored here: changing it re-seals
+     * the passphrase under a new Keystore key, so the crypto owns it and this
+     * is only a view onto it.
+     */
+    var keyProtection: KeyProtection
+        get() = DatabaseKey.protection(context)
+        set(value) = DatabaseKey.setProtection(context, value)
 
     private val prefs =
         context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)

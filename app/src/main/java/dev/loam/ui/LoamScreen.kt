@@ -124,6 +124,8 @@ fun LoamScreen(viewModel: SearchViewModel) {
                     onPickVault = { pickVault.launch(null) },
                     onPickModel = onPickModel,
                     onReindex = viewModel::reindex,
+                    keyProtection = state.keyProtection,
+                    onKeyProtectionChange = viewModel::onKeyProtectionChange,
                 )
                 return@Column
             }
@@ -360,7 +362,7 @@ private fun ResultCard(
 }
 
 @Composable
-private fun Centered(content: @Composable () -> Unit) {
+fun Centered(content: @Composable () -> Unit) {
     Column(
         modifier = Modifier
             .fillMaxSize()
