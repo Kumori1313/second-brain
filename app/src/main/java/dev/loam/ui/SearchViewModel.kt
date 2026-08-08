@@ -2,6 +2,7 @@ package dev.loam.ui
 
 import android.app.Application
 import android.net.Uri
+import android.util.Log
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import androidx.work.WorkInfo
@@ -58,7 +59,16 @@ class SearchViewModel(app: Application) : AndroidViewModel(app) {
         val answer: String = "",
         val sources: List<AskQuestion.Source> = emptyList(),
         val outcome: Outcome? = null,
+        /** Completed exchanges, oldest first. The one in flight is not here. */
+        val turns: List<Exchange> = emptyList(),
     ) {
+        /** A finished exchange, with the sources that answer was built from. */
+        data class Exchange(
+            val question: String,
+            val answer: String,
+            val sources: List<AskQuestion.Source>,
+        )
+
         sealed interface Outcome {
             /** Retrieval found nothing worth answering from. */
             data object NoGoodMatches : Outcome
@@ -385,12 +395,18 @@ class SearchViewModel(app: Application) : AndroidViewModel(app) {
         if (question.isBlank()) return
 
         askJob?.cancel()
+        val previous = _state.value.ask
+        // Keep the transcript, clear only the in-flight slots.
         _state.value = _state.value.copy(
-            ask = AskState(question = question, asking = true),
+            ask = AskState(question = question, asking = true, turns = previous.turns),
         )
         askJob = viewModelScope.launch {
             try {
-                loam.askQuestion.ask(question).collect { event ->
+                val history = previous.turns.map {
+                    AskQuestion.Turn(question = it.question, answer = it.answer)
+                }
+                Log.i(TAG, "ask start history=${history.size} q=${question.take(40)}")
+                loam.askQuestion.ask(question, history).collect { event ->
                     val ask = _state.value.ask
                     _state.value = _state.value.copy(
                         ask = when (event) {
@@ -419,9 +435,54 @@ class SearchViewModel(app: Application) : AndroidViewModel(app) {
                     )
                 )
             } finally {
-                _state.value = _state.value.copy(ask = _state.value.ask.copy(asking = false))
+                val done = _state.value.ask
+                Log.i(
+                    TAG,
+                    "ask done sources=${done.sources.size} answerChars=${done.answer.length} " +
+                        "outcome=${done.outcome} turns=${done.turns.size}",
+                )
+                _state.value = _state.value.copy(
+                    ask = if (done.answer.isNotBlank()) {
+                        // Commit the exchange and clear the composer, so the
+                        // next question starts empty rather than re-editing the
+                        // last one.
+                        done.copy(
+                            asking = false,
+                            question = "",
+                            answer = "",
+                            sources = emptyList(),
+                            turns = done.turns + AskState.Exchange(
+                                question = question,
+                                answer = done.answer,
+                                sources = done.sources,
+                            ),
+                        )
+                    } else if (done.outcome == null && done.sources.isNotEmpty()) {
+                        // Retrieved evidence but the model produced nothing.
+                        // Without this the turn vanishes silently: sources with
+                        // no answer render as an empty gap, which reads as the
+                        // app having ignored the question.
+                        done.copy(
+                            asking = false,
+                            outcome = AskState.Outcome.Failed(
+                                "The model returned an empty answer."
+                            ),
+                        )
+                    } else {
+                        // Cancelled, refused, or failed: nothing worth carrying
+                        // into the next question's context.
+                        done.copy(asking = false)
+                    }
+                )
             }
         }
+    }
+
+    /** Starts a fresh conversation, dropping the transcript. */
+    fun onNewConversation() {
+        askJob?.cancel()
+        askJob = null
+        _state.value = _state.value.copy(ask = AskState())
     }
 
     /** Abandons generation; the Flow being cold means the model stops too. */
@@ -450,6 +511,7 @@ class SearchViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     private companion object {
+        const val TAG = "LoamAsk"
         const val SEARCH_DEBOUNCE_MS = 250L
     }
 }

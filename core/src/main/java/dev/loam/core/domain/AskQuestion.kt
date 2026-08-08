@@ -89,7 +89,14 @@ class AskQuestion(
         val uri: String,
     )
 
-    fun ask(question: String, params: GenerationParams = GenerationParams()): Flow<Event> = flow {
+    /** One completed exchange. Carries text only — see [messagesFor]. */
+    data class Turn(val question: String, val answer: String)
+
+    fun ask(
+        question: String,
+        history: List<Turn> = emptyList(),
+        params: GenerationParams = GenerationParams(),
+    ): Flow<Event> = flow {
         if (question.isBlank()) return@flow
 
         val llm = engine() ?: run {
@@ -97,13 +104,14 @@ class AskQuestion(
             return@flow
         }
 
-        val hits = retriever.retrieve(question, RETRIEVE_LIMIT)
+        val hits = retriever.retrieve(retrievalQuery(question, history), RETRIEVE_LIMIT)
         if (hits.isEmpty()) {
             emit(Event.NoGoodMatches)
             return@flow
         }
 
-        val used = fit(llm, question, hits, params.maxTokens)
+        val recent = trimHistory(llm, history, question, params.maxTokens)
+        val used = fit(llm, question, hits, params.maxTokens, recent)
         if (used.isEmpty()) {
             // Everything retrieved was too large to fit alongside the question
             // and a reply. Rare, but claiming "no good matches" would be a lie
@@ -116,7 +124,58 @@ class AskQuestion(
         // dropped would attribute the answer to evidence the model never saw.
         emit(Event.Sources(used.map(::toSource)))
 
-        llm.generate(messagesFor(question, used), params).collect { emit(Event.Token(it)) }
+        llm.generate(messagesFor(question, used, recent), params)
+            .collect { emit(Event.Token(it)) }
+    }
+
+    /**
+     * What gets embedded for retrieval, which is not always the question.
+     *
+     * A follow-up is frequently unsearchable on its own — "and why that one?"
+     * has no content to match against. Prepending the previous question
+     * restores the subject cheaply, without the extra generation pass a proper
+     * query rewrite would cost, and that pass would add seconds to a feature
+     * already waiting ~9 s for its first token.
+     *
+     * Only the immediately preceding question, and only its text. Going further
+     * back starts dragging retrieval toward whatever the conversation used to
+     * be about, which is worse than a vague follow-up.
+     */
+    private fun retrievalQuery(question: String, history: List<Turn>): String =
+        history.lastOrNull()?.let { "${it.question}\n$question" } ?: question
+
+    /**
+     * Keeps the most recent turns that fit a reserved slice of the window.
+     *
+     * History and retrieved chunks compete for the same space, and chunks win:
+     * grounding is the whole product, so history gets a bounded reserve rather
+     * than an equal claim. Oldest turns are dropped first — a follow-up refers
+     * to what was just said, not to the start of the conversation.
+     */
+    private fun trimHistory(
+        llm: LlmEngine,
+        history: List<Turn>,
+        question: String,
+        replyTokens: Int,
+    ): List<Turn> {
+        if (history.isEmpty()) return emptyList()
+
+        val free = llm.info.contextTokens -
+            llm.countTokens(SYSTEM_PROMPT) -
+            llm.countTokens(question) -
+            replyTokens -
+            FRAMING_TOKENS
+        if (free <= 0) return emptyList()
+
+        var budget = (free * HISTORY_SHARE).toInt()
+        val kept = ArrayDeque<Turn>()
+        for (turn in history.takeLast(MAX_HISTORY_TURNS).asReversed()) {
+            val cost = llm.countTokens(turn.question) + llm.countTokens(turn.answer) + TURN_FRAMING
+            if (cost > budget) break
+            budget -= cost
+            kept.addFirst(turn)
+        }
+        return kept.toList()
     }
 
     /**
@@ -133,10 +192,15 @@ class AskQuestion(
         question: String,
         hits: List<SearchNotes.Result>,
         replyTokens: Int,
+        history: List<Turn>,
     ): List<SearchNotes.Result> {
+        val historyCost = history.sumOf {
+            llm.countTokens(it.question) + llm.countTokens(it.answer) + TURN_FRAMING
+        }
         val overhead = llm.countTokens(SYSTEM_PROMPT) +
             llm.countTokens(question) +
             replyTokens +
+            historyCost +
             FRAMING_TOKENS
         var remaining = llm.info.contextTokens - overhead
         if (remaining <= 0) return emptyList()
@@ -158,16 +222,36 @@ class AskQuestion(
         return used
     }
 
-    private fun messagesFor(question: String, used: List<SearchNotes.Result>) = listOf(
-        Message(Message.Role.SYSTEM, SYSTEM_PROMPT),
-        Message(
-            Message.Role.USER,
-            buildString {
-                used.forEach { append(render(it)).append('\n') }
-                append("\nQuestion: ").append(question)
-            },
-        ),
-    )
+    /**
+     * System prompt, then prior turns as plain exchanges, then the notes and the
+     * question.
+     *
+     * Prior turns carry their question and answer but **not** their source
+     * chunks. Re-including old evidence would consume the window several times
+     * over for the same notes, and the answer text already records what mattered
+     * from them. Fresh retrieval runs every turn, so a follow-up that needs
+     * different notes gets them.
+     */
+    private fun messagesFor(
+        question: String,
+        used: List<SearchNotes.Result>,
+        history: List<Turn>,
+    ): List<Message> = buildList {
+        add(Message(Message.Role.SYSTEM, SYSTEM_PROMPT))
+        history.forEach { turn ->
+            add(Message(Message.Role.USER, turn.question))
+            add(Message(Message.Role.ASSISTANT, turn.answer))
+        }
+        add(
+            Message(
+                Message.Role.USER,
+                buildString {
+                    used.forEach { append(render(it)).append('\n') }
+                    append("\nQuestion: ").append(question)
+                },
+            )
+        )
+    }
 
     /** One chunk, labelled well enough that the model can cite it by name. */
     private fun render(hit: SearchNotes.Result): String = buildString {
@@ -197,6 +281,26 @@ class AskQuestion(
 
         /** Slack for chat-template markup, separators and the role scaffold. */
         private const val FRAMING_TOKENS = 64
+
+        /** Per-turn chat-template overhead, on top of the text itself. */
+        private const val TURN_FRAMING = 8
+
+        /**
+         * How much of the free window history may claim before chunks get the
+         * rest. History helps a follow-up resolve its referent; chunks are what
+         * the answer is grounded in, so they get the larger share.
+         */
+        private const val HISTORY_SHARE = 0.35
+
+        /**
+         * Turns carried at most, regardless of budget.
+         *
+         * Every turn is re-fed on each question, since the KV cache is cleared
+         * between them, so history costs prompt processing on every exchange —
+         * roughly 1.5 s per chunk-equivalent. An unbounded transcript would make
+         * the tenth question far slower than the first.
+         */
+        private const val MAX_HISTORY_TURNS = 4
 
         /**
          * Kept blunt on purpose. The spike answered correctly with wording

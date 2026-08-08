@@ -141,6 +141,7 @@ fun LoamScreen(viewModel: SearchViewModel) {
                     onQuestionChange = viewModel::onQuestionChange,
                     onAsk = viewModel::ask,
                     onCancel = viewModel::cancelAsk,
+                    onNewConversation = viewModel::onNewConversation,
                     onPickModel = onPickModel,
                     onOpenSource = { source -> openSource(context, opener, source) },
                 )

@@ -2,6 +2,7 @@ package dev.loam.ui
 
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -33,6 +34,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import dev.loam.core.domain.AskQuestion
 
@@ -50,6 +52,7 @@ fun AskPane(
     onQuestionChange: (String) -> Unit,
     onAsk: () -> Unit,
     onCancel: () -> Unit,
+    onNewConversation: () -> Unit,
     onPickModel: () -> Unit,
     onOpenSource: (AskQuestion.Source) -> Unit,
 ) {
@@ -83,7 +86,17 @@ fun AskPane(
             },
         )
 
-        ModelStatusBar(state = state, onPickModel = onPickModel)
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Box(Modifier.weight(1f)) {
+                ModelStatusBar(state = state, onPickModel = onPickModel)
+            }
+            if (ask.turns.isNotEmpty()) {
+                TextButton(onClick = onNewConversation) { Text("New") }
+            }
+        }
         HorizontalDivider()
 
         Column(
@@ -118,15 +131,48 @@ fun AskPane(
                 null -> Unit
             }
 
+            // In flight first, then completed exchanges newest-first.
+            //
+            // Oldest-first is the chat convention, but chat puts the composer
+            // at the bottom. Here it is at the top, and each exchange carries
+            // six source cards — so oldest-first buried a new answer under a
+            // screen and a half of previous evidence. It looked like the
+            // question had been ignored.
             if (ask.sources.isNotEmpty()) {
+                if (ask.question.isNotBlank()) {
+                    Text(
+                        text = ask.question,
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                    Spacer(Modifier.height(4.dp))
+                }
                 AnswerBlock(ask)
                 Spacer(Modifier.height(16.dp))
                 SourcesPanel(ask.sources, onOpenSource)
+                if (ask.turns.isNotEmpty()) {
+                    HorizontalDivider(Modifier.padding(vertical = 12.dp))
+                }
             } else if (ask.asking) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
                     Spacer(Modifier.width(12.dp))
                     Text("Searching your notes…", style = MaterialTheme.typography.bodySmall)
+                }
+            }
+
+            ask.turns.asReversed().forEachIndexed { index, turn ->
+                Text(
+                    text = turn.question,
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.SemiBold,
+                )
+                Spacer(Modifier.height(4.dp))
+                Text(text = turn.answer, style = MaterialTheme.typography.bodyMedium)
+                Spacer(Modifier.height(8.dp))
+                SourcesPanel(turn.sources, onOpenSource)
+                if (index < ask.turns.lastIndex) {
+                    HorizontalDivider(Modifier.padding(vertical = 12.dp))
                 }
             }
         }
@@ -218,6 +264,10 @@ private fun SourcesPanel(
                     text = source.snippet,
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    // Enough to recognise the chunk, not enough that six of
+                    // them bury the answer. The whole note is a tap away.
+                    maxLines = 3,
+                    overflow = TextOverflow.Ellipsis,
                 )
             }
         }

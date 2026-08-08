@@ -51,6 +51,7 @@ class AskPaneTest {
         modelName: String? = "qwen2.5-1.5b-instruct-q4_0.gguf",
         onAsk: () -> Unit = {},
         onCancel: () -> Unit = {},
+        onNewConversation: () -> Unit = {},
         onPickModel: () -> Unit = {},
         onOpenSource: (AskQuestion.Source) -> Unit = {},
     ) {
@@ -65,6 +66,7 @@ class AskPaneTest {
                 onQuestionChange = {},
                 onAsk = onAsk,
                 onCancel = onCancel,
+                onNewConversation = onNewConversation,
                 onPickModel = onPickModel,
                 onOpenSource = onOpenSource,
             )
