@@ -421,11 +421,11 @@ Done:
 - ~~Surface periodic runs in the UI~~ — half of it could not be done through WorkManager at all. See below.
 - ~~Tests for the index-work state machine~~ — thirteen, and the extraction that made them possible was the same move as the Search pane.
 - ~~Recalibrate `DEFAULT_MIN_SCORE`~~ — 0.35 → 0.44, plus the "show weak matches" reach that makes raising it safe. The measurement said something more useful than a number; see below.
+- ~~Exclude patterns and chunk size~~ — the reindex flow they were waiting for turned out to be two flows, because only one of them invalidates anything.
 
 Remaining:
-- Exclude patterns and chunk size. Deliberately absent from Settings: both invalidate the stored index, which makes them a different kind of setting and one that needs a reindex flow first.
 - Share-sheet integration; consider a home-screen search widget.
-- Battery/thermal testing under a full-vault first index, worth redoing now that it is not measuring two indexers at once.
+- Battery/thermal testing under a full-vault first index, worth redoing now that it is not measuring two indexers at once — and now that a chunk-size change gives a repeatable way to trigger one on demand. The unexplained 46–52 ms/chunk below is the first thing to point it at.
 - **Exit criteria:** daily-driver comfortable — you reach for it instead of manual grep.
 
 Struck from this list: *paginated/streamed indexing so a large vault doesn't freeze the UI on first run*. Indexing runs in WorkManager with per-stage progress and never blocked the UI. The related worry about the vector index living in heap was also misplaced — measured at 8 MB for 5,297 chunks and 77 MB at 50k. The actual memory problem was somewhere else entirely; see below.
@@ -498,6 +498,24 @@ Worth naming for its shape rather than its content, because it is the same shape
 
 Two things about the tests themselves. The `assertDoesNotExist` assertions — no Reindex button mid-index, no "No good matches" before a search, no stale counts under an error — are the ones that pass for free if a string is renamed, so each has a positive counterpart asserting the same text *is* present in the state where it belongs. That pairing is what makes an absence assertion mean anything, and it is cheap. And the query field cannot be found by its label or placeholder: both are sibling nodes rather than part of the editable field's semantics, so `performTextInput` finds nothing to type into. It is matched by `hasSetTextAction()`.
 
+#### The two settings that needed a reindex flow needed two different ones
+
+Both were held out of Settings on the grounds that they invalidate the stored index. Only one of them does.
+
+**Excludes invalidate nothing.** A note that stops matching the walk stops being found, and the stale sweep that has always been there deletes it. Rebuilding for that would be ~285 s of re-embedding to achieve a delete. Directories are skipped rather than walked-and-filtered, since enumeration is the expensive half of a SAF pass — one `ContentResolver` query per node, 13.5 s for 392 files before the `DocumentsContract` rewrite.
+
+**Chunk size invalidates everything, and nothing else can tell.** Every note's `(mtime, size)` is unchanged, so the incremental sweep revisits nothing, while every stored chunk is a split of the old shape. The signal has to be carried separately: a chunking fingerprint, compared at the start of a pass and written at the end. Written at the end specifically — an interrupted rebuild must be retried rather than banked, because a half-rebuilt index is valid-looking rows in two different shapes with no symptom that anything downstream could detect.
+
+Both are staged behind a single Apply that says what it costs, because applying either live would start a full pass over the vault per keystroke and per slider tick.
+
+`ExcludeRules` is gitignore-shaped and deliberately a subset — no negation, no character classes, no anchoring subtleties. Each of those is a rule the user would have to learn from behaviour, and over-matching is the failure mode to design against: a pattern that quietly takes more of the vault than it says has no symptom except search coming back empty for a note you know you wrote. The regex translation escapes by default rather than by blocklist, because a real vault contains `C++ Notes.md` and `Step (2).md`, and either one left unescaped is a literal pattern that has silently become a different one.
+
+**One defect the device caught and no test would have.** An absent chunking fingerprint read as "unknown", so the first pass after upgrading rebuilt the whole index — every existing install paying a full re-embed to arrive at the shape it already had. Watched it happen, at **285 s**. Absent means "built before chunking was configurable", which back then could only have been the default. The general shape is the same one the settings-default hazard has: *a new field's null state is a claim about history, and reading it as ignorance is a decision, not a default.*
+
+Verified against the real vault rather than a fixture: `AE *.md` took it from 392 notes to 389, and the notes it removed — which had turned up in the relevance-floor probe output earlier the same session — were gone from the index entirely. Clearing it brought back exactly 3 notes and 252 chunks, and 5,045 + 252 is 5,297, the count it started at.
+
+One measurement left unexplained rather than explained away: that full rebuild ran at 46–52 ms/chunk against the 24.1 ms/chunk this document records for the original full index, 285 s against 151 s. Screen-on, thermal state after a long test session, and foreground contention are all plausible and none of them was isolated. Recorded as an open discrepancy, since the alternative is exactly the confident just-so story this project keeps having to retract.
+
 #### The relevance floor cannot separate relevant from irrelevant, and now says so
 
 Recalibration measured 30 probe queries against the real 5,297-chunk index, labelling each top hit by hand:
@@ -546,6 +564,7 @@ Those tests are built from real `WorkInfo` values rather than an interface of ou
 - **Small-model hallucination survives RAG.** Grounding reduces it, doesn't eliminate it — the "sources used" panel is doing real work here, not decoration.
 - **SAF has no true background filesystem watch.** Periodic + manual reindex is the honest architecture, not a stopgap.
 - **First index of a large, long-lived vault will be slow and battery-heavy.** Needs a visible progress state; shouldn't run silently in the background on first launch.
+- **A new field's absent state is a claim about history.** Twice now: a setting stored equal to its default froze that default forever, and an absent chunking fingerprint read as "unknown" would have rebuilt every existing index to reach the shape it already had. Both times the honest reading was available — nobody expressed a preference; chunking could only have been the default — and both times reading it as ignorance was a decision made by not making one.
 - **Testing states is not testing transitions.** Index protection was verified at each of its three levels and shipped; it destroyed a real index on the *change* between two of them, which no test touched. The same shape as the entry below — the thing exercised was adjacent to the thing that mattered.
 - **A test environment that can do more than production proves nothing about production.** Three separate bugs in Phase 2 came from this, each with a green suite and a broken app: an APK packaged differently from the test APK, a fixture the app could open by path where the real file needs a SAF grant, and a prompt short enough to stay under a batch limit the real one exceeds. When a test constructs its own inputs, it tends to construct ones it can satisfy. Ask what the real path crosses that the fixture does not.
 - **"Newer, more capable, more features" keeps measuring slower.** Q4_K_M lost to Q4_0; SVE2 lost to plain NEON+i8mm by 1.79x; ObjectBox, the most capable vector store, was ruled out on licensing. On-device, the sophisticated option is a hypothesis, not a default — and the wrong one produces correct output at half the speed, which no test catches.
