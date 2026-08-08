@@ -161,51 +161,78 @@ fun LoamScreen(viewModel: SearchViewModel) {
                 return@Column
             }
 
-            OutlinedTextField(
-                value = state.query,
-                onValueChange = viewModel::onQueryChange,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(top = 8.dp),
-                label = { Text("Search your notes") },
-                placeholder = { Text("did I ever write about…") },
-                singleLine = true,
+            SearchPane(
+                state = state,
+                onQueryChange = viewModel::onQueryChange,
+                onReindex = viewModel::reindex,
+                onOpenResult = { result -> openNote(context, opener, result) },
+                onChooseOpener = { showOpenWith = true },
             )
+        }
+    }
+}
 
-            IndexStatusBar(state = state, onReindex = viewModel::reindex)
+/**
+ * Extracted from [LoamScreen] so it is a pure function of
+ * [SearchViewModel.UiState], the same shape as [AskPane].
+ *
+ * That is what makes it testable: every branch here — searching, nothing
+ * matched, results, indexing, an index error — can be driven with fabricated
+ * state, no database or embedder required.
+ */
+@Composable
+fun SearchPane(
+    state: SearchViewModel.UiState,
+    onQueryChange: (String) -> Unit,
+    onReindex: () -> Unit,
+    onOpenResult: (SearchNotes.Result) -> Unit,
+    onChooseOpener: () -> Unit,
+) {
+    Column(Modifier.fillMaxSize()) {
+        OutlinedTextField(
+            value = state.query,
+            onValueChange = onQueryChange,
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(top = 8.dp),
+            label = { Text("Search your notes") },
+            placeholder = { Text("did I ever write about…") },
+            singleLine = true,
+        )
 
-            HorizontalDivider()
+        IndexStatusBar(state = state, onReindex = onReindex)
 
-            when {
-                state.searching && state.results.isEmpty() -> Centered {
-                    CircularProgressIndicator()
+        HorizontalDivider()
+
+        when {
+            state.searching && state.results.isEmpty() -> Centered {
+                CircularProgressIndicator()
+            }
+
+            state.searched && state.results.isEmpty() -> Centered {
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    Text("No good matches", style = MaterialTheme.typography.titleMedium)
+                    Spacer(Modifier.height(8.dp))
+                    Text(
+                        // Saying so is a stated requirement: a weak match
+                        // presented confidently is worse than none.
+                        "Nothing in the index was close enough to be worth showing.",
+                        style = MaterialTheme.typography.bodySmall,
+                    )
                 }
+            }
 
-                state.searched && state.results.isEmpty() -> Centered {
-                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                        Text("No good matches", style = MaterialTheme.typography.titleMedium)
-                        Spacer(Modifier.height(8.dp))
-                        Text(
-                            // Saying so is a stated requirement: a weak match
-                            // presented confidently is worse than none.
-                            "Nothing in the index was close enough to be worth showing.",
-                            style = MaterialTheme.typography.bodySmall,
-                        )
-                    }
-                }
-
-                else -> LazyColumn(
-                    modifier = Modifier.fillMaxSize(),
-                    verticalArrangement = Arrangement.spacedBy(8.dp),
-                    contentPadding = androidx.compose.foundation.layout.PaddingValues(vertical = 12.dp),
-                ) {
-                    items(state.results, key = { it.chunkId }) { result ->
-                        ResultCard(
-                            result = result,
-                            onClick = { openNote(context, opener, result) },
-                            onLongClick = { showOpenWith = true },
-                        )
-                    }
+            else -> LazyColumn(
+                modifier = Modifier.fillMaxSize(),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+                contentPadding = androidx.compose.foundation.layout.PaddingValues(vertical = 12.dp),
+            ) {
+                items(state.results, key = { it.chunkId }) { result ->
+                    ResultCard(
+                        result = result,
+                        onClick = { onOpenResult(result) },
+                        onLongClick = onChooseOpener,
+                    )
                 }
             }
         }
