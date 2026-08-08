@@ -13,6 +13,7 @@ import dev.loam.core.domain.AskQuestion
 import dev.loam.core.domain.SearchNotes
 import dev.loam.core.domain.Tuning
 import dev.loam.core.store.KeyProtection
+import dev.loam.work.IndexRunLog
 import dev.loam.work.IndexWorker
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
@@ -48,6 +49,11 @@ class SearchViewModel(app: Application) : AndroidViewModel(app) {
         /** Last path segment of the vault URI — enough to recognise it. */
         val vaultName: String? = null,
         val keyProtection: KeyProtection = KeyProtection.OFF,
+        /**
+         * The last completed index pass, background or manual, possibly from a
+         * previous launch. Rendered as the dated fact it is, not as news.
+         */
+        val lastRun: IndexRunLog.Run? = null,
     )
 
     /**
@@ -109,6 +115,7 @@ class SearchViewModel(app: Application) : AndroidViewModel(app) {
 
     init {
         observeIndexing()
+        observeLastRun()
         observeCounts()
         warmUp()
         ensurePeriodicIndexing()
@@ -286,90 +293,105 @@ class SearchViewModel(app: Application) : AndroidViewModel(app) {
      *
      * Without this, each app launch sees the *previous* run's SUCCEEDED and
      * treats it as fresh: it invalidates the index warm-up just finished
-     * loading, reloads it, and reports a duration from a run that happened days
-     * ago as though it had just completed.
+     * loading, and reloads it for nothing.
      */
     private var runningWorkId: UUID? = null
 
+    /**
+     * Both index passes, not only the one the user starts.
+     *
+     * Watching UNIQUE_MANUAL alone made a background pass invisible: no
+     * progress while it ran, and the Reindex button stayed live throughout, so
+     * the one thing the user could do about it was enqueue a run whose only
+     * possible outcome was to skip.
+     *
+     * At most one can be doing work — [IndexVault] holds a mutex and the loser
+     * returns skipped — so "whichever is RUNNING" is never ambiguous.
+     */
     private fun observeIndexing() {
         val wm = WorkManager.getInstance(getApplication())
-        wm.getWorkInfosForUniqueWorkFlow(IndexWorker.UNIQUE_MANUAL)
-            .onEach { infos ->
-                val info = infos.firstOrNull() ?: return@onEach
+        combine(
+            wm.getWorkInfosForUniqueWorkFlow(IndexWorker.UNIQUE_MANUAL),
+            wm.getWorkInfosForUniqueWorkFlow(IndexWorker.UNIQUE_PERIODIC),
+        ) { manual, periodic -> manual.firstOrNull() to periodic.firstOrNull() }
+            .onEach { (manual, periodic) -> onIndexWork(manual, periodic) }
+            .launchIn(viewModelScope)
+    }
 
-                // Terminal states are replayed to every new subscriber, so a
-                // completion we never saw running belongs to a previous launch.
-                // Acting on it would invalidate the index warm-up just loaded
-                // and report a days-old duration as if it had just happened.
-                // The live note and chunk counts already say what is indexed.
-                val isReplay = info.state.isFinished && info.id != runningWorkId
-                if (isReplay) return@onEach
+    private fun onIndexWork(manual: WorkInfo?, periodic: WorkInfo?) {
+        fun WorkInfo?.running() = this?.takeIf { it.state == WorkInfo.State.RUNNING }
 
-                when (info.state) {
-                    WorkInfo.State.RUNNING -> {
-                        runningWorkId = info.id
-                        _state.value = _state.value.copy(
-                            indexing = true,
-                            error = null,
-                            indexStatus = describe(info),
-                        )
-                    }
+        val background = periodic.running()
+        val running = manual.running() ?: background
+        if (running != null) {
+            runningWorkId = running.id
+            _state.value = _state.value.copy(
+                indexing = true,
+                error = null,
+                indexStatus = describe(running, background = running === background),
+            )
+            return
+        }
 
-                    WorkInfo.State.SUCCEEDED -> {
-                        runningWorkId = null
-                        if (info.outputData.getBoolean(IndexWorker.KEY_SKIPPED, false)) {
-                            // Nothing ran, so nothing changed — reporting "up to
-                            // date" here would claim a guarantee this run never
-                            // checked, and reloading the index would throw away
-                            // a warm cache to no purpose.
-                            _state.value = _state.value.copy(
-                                indexing = false,
-                                indexStatus = "Already indexing",
-                            )
-                            return@onEach
-                        }
-                        val notes = info.outputData.getInt(IndexWorker.KEY_NOTES_INDEXED, 0)
-                        val chunks = info.outputData.getInt(IndexWorker.KEY_CHUNKS, 0)
-                        val secs = info.outputData.getLong(IndexWorker.KEY_MILLIS, 0) / 1000.0
-                        _state.value = _state.value.copy(
-                            indexing = false,
-                            indexStatus = if (notes == 0) {
-                                "Index up to date"
-                            } else {
-                                "Indexed %d notes, %d chunks in %.1fs".format(notes, chunks, secs)
-                            },
-                        )
-                        // Vectors changed underneath the cache. Reload eagerly
-                        // rather than leaving the next search to pay for it —
-                        // indexing is exactly when the index grew largest.
-                        viewModelScope.launch {
-                            loam.searchNotes.invalidate()
-                            if (_state.value.query.isNotBlank()) {
-                                search(_state.value.query)
-                            } else {
-                                loam.searchNotes.warmUp()
-                            }
-                        }
-                    }
+        // Nothing is running now. Only react to a stop we watched start —
+        // terminal states are replayed to every new subscriber, so the manual
+        // run that finished days ago arrives on launch looking exactly like one
+        // that just did, and reloading the index for it would throw away the
+        // warm-up that finished moments earlier.
+        val watched = runningWorkId ?: return
+        runningWorkId = null
 
-                    WorkInfo.State.FAILED -> {
-                        runningWorkId = null
-                        _state.value = _state.value.copy(
-                            indexing = false,
-                            indexStatus = null,
-                            error = info.outputData.getString(IndexWorker.KEY_ERROR)
-                                ?: "Indexing failed",
-                        )
-                    }
+        val finished = listOfNotNull(manual, periodic).firstOrNull { it.id == watched }
+        if (finished?.outputData?.getBoolean(IndexWorker.KEY_SKIPPED, false) == true) {
+            // Nothing ran, so nothing changed — reporting "up to date" here
+            // would claim a guarantee this run never checked, and reloading the
+            // index would throw away a warm cache to no purpose.
+            _state.value = _state.value.copy(indexing = false, indexStatus = "Already indexing")
+            return
+        }
 
-                    else -> Unit
-                }
+        // What the pass actually did is reported by [observeLastRun], which
+        // reads the record the worker wrote. That is not indirection for its
+        // own sake: a periodic run has no output data to read, so the outcome
+        // has to come from somewhere both kinds of run can reach.
+        _state.value = _state.value.copy(indexing = false, indexStatus = null)
+
+        // Vectors changed underneath the cache. Reload eagerly rather than
+        // leaving the next search to pay for it — indexing is exactly when the
+        // index grew largest.
+        viewModelScope.launch {
+            loam.searchNotes.invalidate()
+            if (_state.value.query.isNotBlank()) {
+                search(_state.value.query)
+            } else {
+                loam.searchNotes.warmUp()
+            }
+        }
+    }
+
+    /**
+     * The last completed pass, including ones this process never saw.
+     *
+     * Most periodic passes happen with the app closed, so this — not live
+     * progress — is how a background reindex usually becomes visible at all.
+     * An error survives here too, where the WorkInfo path lost it on restart.
+     */
+    private fun observeLastRun() {
+        IndexRunLog.get(getApplication()).last
+            .onEach { run ->
+                _state.value = _state.value.copy(lastRun = run, error = run?.error)
             }
             .launchIn(viewModelScope)
     }
 
-    private fun describe(info: WorkInfo): String =
-        when (info.progress.getString(IndexWorker.KEY_STAGE)) {
+    /**
+     * @param background prefixes the line, because the two runs are otherwise
+     *   indistinguishable on screen and the difference matters: one appeared on
+     *   its own and will finish on its own, the other is something the user is
+     *   waiting on.
+     */
+    private fun describe(info: WorkInfo, background: Boolean): String {
+        val stage = when (info.progress.getString(IndexWorker.KEY_STAGE)) {
             IndexWorker.STAGE_WALKING ->
                 "Scanning vault… ${info.progress.getInt(IndexWorker.KEY_FILES_FOUND, 0)} notes found"
 
@@ -382,6 +404,8 @@ class SearchViewModel(app: Application) : AndroidViewModel(app) {
 
             else -> "Starting…"
         }
+        return if (background) "Background reindex · $stage" else stage
+    }
 
     fun onVaultPicked(uri: Uri) {
         loam.vaultLocation.save(uri)

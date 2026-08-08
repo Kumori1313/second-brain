@@ -25,13 +25,21 @@ class IndexWorker(
     params: androidx.work.WorkerParameters,
 ) : CoroutineWorker(context, params) {
 
+    /**
+     * True when this is the unattended catch-up rather than a pass the user
+     * asked for. Carried in input data because a periodic run has no other way
+     * to identify itself to the code that reports it.
+     */
+    private val periodic: Boolean get() = inputData.getBoolean(KEY_PERIODIC, false)
+
     override suspend fun doWork(): Result {
         val loam = Loam.get(applicationContext)
+        val log = IndexRunLog.get(applicationContext)
         val treeUri = loam.vaultLocation.treeUri ?: return Result.success()
         if (!loam.vaultLocation.isGrantValid()) {
             // The user revoked folder access in system settings. Failing loudly
             // beats retrying forever against a URI we can no longer read.
-            return Result.failure(workDataOf(KEY_ERROR to "Vault access was revoked"))
+            return finish(log, error = "Vault access was revoked")
         }
 
         return try {
@@ -39,15 +47,47 @@ class IndexWorker(
                 setProgressAsync(progress.toData())
             } ?: return Result.success(workDataOf(KEY_SKIPPED to true))
             loam.searchNotes.invalidate()
+            finish(log, notes = done.notesIndexed, chunks = done.chunksEmbedded, millis = done.millis)
+        } catch (e: Exception) {
+            finish(log, error = e.message ?: e::class.simpleName)
+        }
+    }
+
+    /**
+     * Records the outcome, then returns it through WorkManager as well.
+     *
+     * A skipped run deliberately does not come through here. It checked
+     * nothing, so recording it would overwrite a real pass with one that never
+     * looked at the vault — and "last checked" would then be a claim no run
+     * ever made.
+     */
+    private fun finish(
+        log: IndexRunLog,
+        notes: Int = 0,
+        chunks: Int = 0,
+        millis: Long = 0,
+        error: String? = null,
+    ): Result {
+        log.record(
+            IndexRunLog.Run(
+                finishedAt = System.currentTimeMillis(),
+                periodic = periodic,
+                notesIndexed = notes,
+                chunksEmbedded = chunks,
+                millis = millis,
+                error = error,
+            )
+        )
+        return if (error != null) {
+            Result.failure(workDataOf(KEY_ERROR to error))
+        } else {
             Result.success(
                 workDataOf(
-                    KEY_NOTES_INDEXED to done.notesIndexed,
-                    KEY_CHUNKS to done.chunksEmbedded,
-                    KEY_MILLIS to done.millis,
+                    KEY_NOTES_INDEXED to notes,
+                    KEY_CHUNKS to chunks,
+                    KEY_MILLIS to millis,
                 )
             )
-        } catch (e: Exception) {
-            Result.failure(workDataOf(KEY_ERROR to (e.message ?: e::class.simpleName)))
         }
     }
 
@@ -63,6 +103,7 @@ class IndexWorker(
         const val KEY_NOTES_INDEXED = "notesIndexed"
         const val KEY_MILLIS = "millis"
         const val KEY_ERROR = "error"
+        const val KEY_PERIODIC = "periodic"
 
         /**
          * Set when this run did nothing because another was already in flight.
@@ -99,6 +140,7 @@ class IndexWorker(
                 UNIQUE_PERIODIC,
                 ExistingPeriodicWorkPolicy.KEEP,
                 PeriodicWorkRequestBuilder<IndexWorker>(6, TimeUnit.HOURS)
+                    .setInputData(workDataOf(KEY_PERIODIC to true))
                     .setConstraints(
                         androidx.work.Constraints.Builder()
                             .setRequiresBatteryNotLow(true)

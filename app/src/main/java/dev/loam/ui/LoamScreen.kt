@@ -2,6 +2,7 @@ package dev.loam.ui
 
 import android.content.ComponentName
 import android.net.Uri
+import android.text.format.DateUtils
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -51,6 +52,7 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.LifecycleResumeEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import dev.loam.core.domain.SearchNotes
+import dev.loam.work.IndexRunLog
 
 @Composable
 fun LoamScreen(viewModel: SearchViewModel) {
@@ -293,7 +295,44 @@ private fun IndexStatusBar(
         if (state.indexing) {
             LinearProgressIndicator(Modifier.fillMaxWidth())
         }
+        // A second line rather than more text in the first: the counts say what
+        // is indexed, this says when that was last true. Suppressed while a pass
+        // is running, where it is only a stale version of the line above it.
+        val lastRun = state.lastRun
+        if (lastRun != null && !state.indexing && state.error == null) {
+            Text(
+                text = summarize(lastRun),
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
     }
+}
+
+/**
+ * The last pass, said as a dated fact.
+ *
+ * This is where a periodic run usually becomes visible: it runs every six
+ * hours, so almost every one of them completes with the app closed and there is
+ * no progress for anyone to watch. Phrasing it as *when* rather than as an
+ * outcome is also what keeps a result from a previous launch honest.
+ */
+private fun summarize(run: IndexRunLog.Run): String {
+    val now = System.currentTimeMillis()
+    // Under a minute, getRelativeTimeSpanString says "0 minutes ago", which is
+    // the one case where a truthful line reads like a bug — and it is the case
+    // the user sees every time they tap Reindex.
+    val ago = if (now - run.finishedAt < DateUtils.MINUTE_IN_MILLIS) {
+        "just now"
+    } else {
+        DateUtils.getRelativeTimeSpanString(run.finishedAt, now, DateUtils.MINUTE_IN_MILLIS)
+    }
+    val what = if (run.notesIndexed == 0) {
+        "no changes"
+    } else {
+        "${run.notesIndexed} notes, ${run.chunksEmbedded} chunks"
+    }
+    return if (run.periodic) "Background pass · $what · $ago" else "Reindexed · $what · $ago"
 }
 
 @OptIn(ExperimentalFoundationApi::class)

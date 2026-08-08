@@ -9,6 +9,7 @@ import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performTextInput
 import dev.loam.core.domain.SearchNotes
+import dev.loam.work.IndexRunLog
 import org.junit.Assert.assertEquals
 import org.junit.Rule
 import org.junit.Test
@@ -44,6 +45,15 @@ class SearchPaneTest {
         snippet = snippet,
         text = snippet,
         uri = "content://vault/$id",
+    )
+
+    /** Two hours back, so the relative time never renders as "in 0 minutes". */
+    private fun run(periodic: Boolean, notes: Int, chunks: Int) = IndexRunLog.Run(
+        finishedAt = System.currentTimeMillis() - 2 * 60 * 60 * 1000L,
+        periodic = periodic,
+        notesIndexed = notes,
+        chunksEmbedded = chunks,
+        millis = 4200,
     )
 
     private fun show(
@@ -193,6 +203,84 @@ class SearchPaneTest {
 
         compose.onNodeWithText("Vault access was revoked").assertIsDisplayed()
         compose.onNodeWithText("392 notes · 5297 chunks indexed").assertDoesNotExist()
+    }
+
+    @Test
+    fun aFinishedBackgroundPassSaysThatIsWhatItWas() {
+        show(
+            SearchViewModel.UiState(
+                hasVault = true,
+                noteCount = 392,
+                chunkCount = 5297,
+                lastRun = run(periodic = true, notes = 3, chunks = 41),
+            )
+        )
+
+        // The whole point of the line: a pass nobody watched still reports.
+        compose.onNodeWithText("Background pass", substring = true).assertIsDisplayed()
+        compose.onNodeWithText("3 notes, 41 chunks", substring = true).assertIsDisplayed()
+        // The counts keep their own line rather than being crowded out.
+        compose.onNodeWithText("392 notes · 5297 chunks indexed").assertIsDisplayed()
+    }
+
+    @Test
+    fun aPassThatFoundNothingIsNotAPassThatDidNotRun() {
+        show(
+            SearchViewModel.UiState(
+                hasVault = true,
+                lastRun = run(periodic = true, notes = 0, chunks = 0),
+            )
+        )
+
+        compose.onNodeWithText("no changes", substring = true).assertIsDisplayed()
+    }
+
+    @Test
+    fun aPassThatJustFinishedSaysSoInWords() {
+        show(
+            SearchViewModel.UiState(
+                hasVault = true,
+                lastRun = run(periodic = false, notes = 0, chunks = 0)
+                    .copy(finishedAt = System.currentTimeMillis()),
+            )
+        )
+
+        // Android's relative-time formatter renders anything under a minute as
+        // "0 minutes ago" — truthful, and the one phrasing here that reads like
+        // a bug. It is also what every tap of Reindex would produce.
+        compose.onNodeWithText("just now", substring = true).assertIsDisplayed()
+        compose.onNodeWithText("0 minutes ago", substring = true).assertDoesNotExist()
+    }
+
+    @Test
+    fun aManualPassIsNotLabelledAsBackground() {
+        show(
+            SearchViewModel.UiState(
+                hasVault = true,
+                lastRun = run(periodic = false, notes = 3, chunks = 41),
+            )
+        )
+
+        compose.onNodeWithText("Reindexed", substring = true).assertIsDisplayed()
+        compose.onNodeWithText("Background pass", substring = true).assertDoesNotExist()
+    }
+
+    @Test
+    fun theLastPassIsHiddenWhileOneIsRunning() {
+        show(
+            SearchViewModel.UiState(
+                hasVault = true,
+                indexing = true,
+                indexStatus = "Background reindex · Embedding 25/392 notes (403 chunks)",
+                lastRun = run(periodic = true, notes = 3, chunks = 41),
+            )
+        )
+
+        // Mid-pass it is only a stale copy of the line directly above it.
+        compose.onNodeWithText("Background pass", substring = true).assertDoesNotExist()
+        compose.onNodeWithText(
+            "Background reindex · Embedding 25/392 notes (403 chunks)"
+        ).assertIsDisplayed()
     }
 
     @Test
