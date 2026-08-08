@@ -417,12 +417,12 @@ Done:
 - Memory: the model loads on demand and is released in the background.
 - Native libraries aligned to 16 KB pages.
 - ~~Key hardening~~ — shipped as a three-way choice rather than the single design the table above described. See below; it took a revert to get right.
+- ~~UI tests for the Search pane~~ — ten, which required extracting the pane first.
 
 Remaining:
 - Surface periodic runs in the UI. The ViewModel observes only `UNIQUE_MANUAL`, so a background pass is invisible and the Reindex button stays live during one.
 - Recalibrate `DEFAULT_MIN_SCORE`, and consider a "show weak matches" affordance rather than discarding near-threshold hits. Half-answered already: the floor is now a slider, so the remaining question is a design one and is better answered by using it than by reasoning about it.
 - Exclude patterns and chunk size. Deliberately absent from Settings: both invalidate the stored index, which makes them a different kind of setting and one that needs a reindex flow first.
-- UI tests for the Search pane. Ask has twelve; `AskPaneTest` establishes the pattern.
 - Share-sheet integration; consider a home-screen search widget.
 - Battery/thermal testing under a full-vault first index, worth redoing now that it is not measuring two indexers at once.
 - **Exit criteria:** daily-driver comfortable — you reach for it instead of manual grep.
@@ -480,6 +480,10 @@ The model now loads when Ask is first shown and is released whenever the app lea
 This one is worth separating from the rest of the project's near-misses. It was not a test more permissive than production — it was a *correct* test of a configuration that is not universal. The build succeeded, every test passed, and the app worked, because the test device uses 4 KB pages. No reasonable test would have caught it; the OS reported it. **Phase 4 should assert alignment in the build rather than wait for a warning.**
 
 **Settings surfaced a state that had quietly become ambiguous.** Since the model became lazily loaded, `ModelState.None` means both "no model configured" and "configured but not resident". Reading it alone printed "search works without one" directly beneath the model's own filename.
+
+**The Search pane was untestable for a reason that had nothing to do with testing.** Ask got twelve tests easily and Search got none, and the difference was not effort: `AskPane` had been written as a separate composable taking `UiState`, while Search stayed inline in `LoamScreen`, holding a ViewModel and a `Context`. Reaching its branches meant standing up a database and an embedder to produce states that are three fields of a data class. Extracting it — no behaviour change, a pure function of `UiState` — turned ten tests into fabricated state and a callback each, running in 18 s with no vault present. Testability here was a structural property, not a test-writing problem, and the tell was that one pane was easy and its neighbour was impossible.
+
+Two things about the tests themselves. The `assertDoesNotExist` assertions — no Reindex button mid-index, no "No good matches" before a search, no stale counts under an error — are the ones that pass for free if a string is renamed, so each has a positive counterpart asserting the same text *is* present in the state where it belongs. That pairing is what makes an absence assertion mean anything, and it is cheap. And the query field cannot be found by its label or placeholder: both are sibling nodes rather than part of the editable field's semantics, so `performTextInput` finds nothing to type into. It is matched by `hasSetTextAction()`.
 
 **A stalled screenshot produced a confidently wrong bug report.** Conversation history was reported here as broken — the second turn "produced nothing" — on the strength of a scroll that had stopped moving. Logging at the commit point settled it in one run: both turns had always committed. The layout problem was real (oldest-first buried a new answer under a screen and a half of source cards, since the composer sits at the top here rather than the bottom), but the diagnosis was not. Instrument the state; do not read it off pixels.
 
