@@ -8,6 +8,7 @@ import dev.loam.core.domain.IndexStats
 import dev.loam.core.domain.IndexVault
 import dev.loam.core.domain.ModelLocation
 import dev.loam.core.domain.SearchNotes
+import dev.loam.core.domain.Settings
 import dev.loam.core.domain.VaultLocation
 import dev.loam.core.embed.Embedder
 import dev.loam.core.llm.LlmEngine
@@ -25,12 +26,16 @@ class Loam private constructor(private val context: Context) {
 
     val vaultLocation by lazy { VaultLocation(context) }
     val modelLocation by lazy { ModelLocation(context) }
+    val settings by lazy { Settings(context) }
     val indexStats by lazy { IndexStats(context) }
     val indexVault by lazy { IndexVault(context, ::newEmbedder, tokenCounter) }
-    val searchNotes by lazy { SearchNotes(context, ::newEmbedder) }
+    val searchNotes by lazy {
+        SearchNotes(context, ::newEmbedder) { settings.tuning.relevanceFloor }
+    }
     val askQuestion by lazy {
         AskQuestion(
             retriever = { question, limit -> searchNotes.search(question, limit) },
+            maxChunks = { settings.tuning.chunksPerAnswer },
             engine = ::llmEngine,
         )
     }
@@ -44,7 +49,7 @@ class Loam private constructor(private val context: Context) {
      * working Phase 1 wiring to solve a problem one nullable field solves.
      */
     @Volatile
-    var engineFactory: ((Uri) -> LlmEngine)? = null
+    var engineFactory: ((Uri, Int) -> LlmEngine)? = null
 
     /**
      * Whether the model is resident right now.
@@ -60,6 +65,7 @@ class Loam private constructor(private val context: Context) {
     private val engineMutex = Mutex()
     private var engine: LlmEngine? = null
     private var engineUri: Uri? = null
+    private var engineContextTokens: Int = 0
 
     /**
      * The loaded model, opening it on first use.
@@ -79,7 +85,10 @@ class Loam private constructor(private val context: Context) {
         val uri = modelLocation.modelUri ?: return@withLock null
         val factory = engineFactory ?: return@withLock null
 
-        engine?.let { if (engineUri == uri) return@withLock it }
+        val wanted = settings.tuning.contextTokens
+        // The window is fixed when the llama.cpp context is built, so a changed
+        // setting means reopening rather than reusing.
+        engine?.let { if (engineUri == uri && engineContextTokens == wanted) return@withLock it }
 
         // The picked model changed. Release the old mapping before opening
         // another — two gigabyte-scale mappings at once is how this gets killed
@@ -87,9 +96,10 @@ class Loam private constructor(private val context: Context) {
         closeEngineLocked()
 
         val start = System.nanoTime()
-        return@withLock factory(uri).also {
+        return@withLock factory(uri, wanted).also {
             engine = it
             engineUri = uri
+            engineContextTokens = wanted
             Log.i(
                 TAG,
                 "model open %s ctx=%d in %.0fms".format(
@@ -107,6 +117,7 @@ class Loam private constructor(private val context: Context) {
         engine?.let { runCatching { it.close() } }
         engine = null
         engineUri = null
+        engineContextTokens = 0
     }
 
     /**

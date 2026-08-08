@@ -29,7 +29,9 @@ class LoamApp : Application() {
 
         // Cheap: captures a lambda and loads nothing. The model is opened on
         // first use, and only if one has been picked.
-        loam.engineFactory = { uri -> LlamaEngine.open(this, uri) }
+        loam.engineFactory = { uri, contextTokens ->
+            LlamaEngine.open(this, uri, contextTokens = contextTokens)
+        }
 
         // Release the model whenever the app leaves the foreground.
         //

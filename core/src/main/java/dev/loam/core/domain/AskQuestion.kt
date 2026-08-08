@@ -43,6 +43,15 @@ class AskQuestion(
      */
     private val retriever: Retriever,
     /**
+     * A ceiling on chunks per answer, independent of the token budget.
+     *
+     * More context is not monotonically better: small models attend worse
+     * across long inputs, and every extra chunk costs ~1.5 s of prompt
+     * processing on a Pixel 8a. Read per question rather than captured, so
+     * changing it in settings applies to the next answer.
+     */
+    private val maxChunks: () -> Int = { Tuning.DEFAULT_CHUNKS_PER_ANSWER },
+    /**
      * Null until the user has chosen a model file — a setup state, not an
      * error. Suspending because the first call may open a gigabyte of weights,
      * and a plain getter would hide that behind what looks like a field read.
@@ -132,6 +141,8 @@ class AskQuestion(
         var remaining = llm.info.contextTokens - overhead
         if (remaining <= 0) return emptyList()
 
+        val cap = maxChunks().coerceAtLeast(1)
+
         val used = ArrayList<SearchNotes.Result>(hits.size)
         for (hit in hits) {
             val cost = llm.countTokens(render(hit))
@@ -142,7 +153,7 @@ class AskQuestion(
             }
             used += hit
             remaining -= cost
-            if (used.size >= MAX_CHUNKS) break
+            if (used.size >= cap) break
         }
         return used
     }
@@ -183,14 +194,6 @@ class AskQuestion(
          * it means a chunk skipped for size is replaced rather than lost.
          */
         const val RETRIEVE_LIMIT = 12
-
-        /**
-         * A ceiling independent of the token budget. More context is not
-         * monotonically better: small models attend worse across long inputs,
-         * and every extra chunk costs ~1.5 s of prompt processing on a Pixel
-         * 8a. Grounding versus latency, set deliberately.
-         */
-        const val MAX_CHUNKS = 6
 
         /** Slack for chat-template markup, separators and the role scaffold. */
         private const val FRAMING_TOKENS = 64

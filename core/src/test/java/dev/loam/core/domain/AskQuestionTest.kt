@@ -33,8 +33,10 @@ class AskQuestionTest {
     private fun ask(
         hits: List<SearchNotes.Result>,
         engine: ScriptedLlmEngine? = ScriptedLlmEngine(answer = "Grounded answer."),
+        maxChunks: Int = Tuning.DEFAULT_CHUNKS_PER_ANSWER,
     ) = AskQuestion(
         retriever = { _, _ -> hits },
+        maxChunks = { maxChunks },
         engine = { engine },
     )
 
@@ -148,7 +150,7 @@ class AskQuestionTest {
         val sources = (events.first() as AskQuestion.Event.Sources).sources
         // More context is not monotonically better, and each chunk costs
         // ~1.5 s of prompt processing on device.
-        assertEquals(AskQuestion.MAX_CHUNKS, sources.size)
+        assertEquals(Tuning.DEFAULT_CHUNKS_PER_ANSWER, sources.size)
     }
 
     @Test
@@ -208,6 +210,31 @@ class AskQuestionTest {
 
         assertEquals(listOf(AskQuestion.Event.NoGoodMatches), events)
         assertTrue(engine.calls.isEmpty())
+    }
+
+    @Test
+    fun `the chunk cap is read from settings, not compiled in`() = runTest {
+        val engine = ScriptedLlmEngine(info = ModelInfo("big", contextTokens = 1_000_000))
+        val many = (1L..20L).map { hit(it, 0.9f - it * 0.01f) }
+
+        val events = ask(many, engine, maxChunks = 2).ask("why?").toList()
+
+        val sources = (events.first() as AskQuestion.Event.Sources).sources
+        assertEquals(2, sources.size)
+    }
+
+    @Test
+    fun `a cap below one still sends at least one chunk`() = runTest {
+        val engine = ScriptedLlmEngine(info = ModelInfo("big", contextTokens = 1_000_000))
+
+        val events = ask(listOf(hit(1, 0.9f), hit(2, 0.8f)), engine, maxChunks = 0)
+            .ask("why?")
+            .toList()
+
+        // Zero chunks would mean an ungrounded answer, which is the one thing
+        // this use case exists to prevent. Clamped rather than honoured.
+        val sources = (events.first() as AskQuestion.Event.Sources).sources
+        assertEquals(1, sources.size)
     }
 
     @Test

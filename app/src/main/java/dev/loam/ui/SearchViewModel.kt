@@ -10,6 +10,7 @@ import java.util.UUID
 import dev.loam.core.Loam
 import dev.loam.core.domain.AskQuestion
 import dev.loam.core.domain.SearchNotes
+import dev.loam.core.domain.Tuning
 import dev.loam.work.IndexWorker
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
@@ -41,6 +42,9 @@ class SearchViewModel(app: Application) : AndroidViewModel(app) {
         val modelName: String? = null,
         val model: ModelState = ModelState.None,
         val ask: AskState = AskState(),
+        val tuning: Tuning = Tuning(),
+        /** Last path segment of the vault URI — enough to recognise it. */
+        val vaultName: String? = null,
     )
 
     /**
@@ -82,6 +86,8 @@ class SearchViewModel(app: Application) : AndroidViewModel(app) {
         UiState(
             hasVault = loam.vaultLocation.treeUri != null,
             modelName = loam.modelLocation.displayName,
+            tuning = loam.settings.tuning,
+            vaultName = loam.vaultLocation.treeUri?.lastPathSegment,
         )
     )
     val state: StateFlow<UiState> = _state.asStateFlow()
@@ -143,6 +149,26 @@ class SearchViewModel(app: Application) : AndroidViewModel(app) {
             )
         }
     }
+
+    fun onTuningChange(tuning: Tuning) {
+        loam.settings.tuning = tuning
+        // Read back rather than trusting the input: Settings clamps to the
+        // ranges it will honour, and the UI should show what was stored.
+        val stored = loam.settings.tuning
+        _state.value = _state.value.copy(tuning = stored)
+
+        // The context window is baked into the llama.cpp context, so it only
+        // takes effect on reopen. Releasing here means the next Ask picks it up
+        // instead of the change silently doing nothing until a restart.
+        if (stored.contextTokens != tuning.contextTokens || loam.isEngineLoaded) {
+            viewModelScope.launch {
+                loam.closeEngine()
+                _state.value = _state.value.copy(model = ModelState.None)
+            }
+        }
+    }
+
+    fun onResetTuning() = onTuningChange(Tuning())
 
     fun onModelPicked(uri: Uri) {
         loam.modelLocation.save(uri)
@@ -314,7 +340,11 @@ class SearchViewModel(app: Application) : AndroidViewModel(app) {
 
     fun onVaultPicked(uri: Uri) {
         loam.vaultLocation.save(uri)
-        _state.value = _state.value.copy(hasVault = true, error = null)
+        _state.value = _state.value.copy(
+            hasVault = true,
+            error = null,
+            vaultName = uri.lastPathSegment,
+        )
         reindex()
         IndexWorker.schedulePeriodic(getApplication())
     }

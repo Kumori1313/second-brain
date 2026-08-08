@@ -26,6 +26,11 @@ import kotlinx.coroutines.withContext
 class SearchNotes(
     private val context: Context,
     private val embedderFactory: () -> Embedder,
+    /**
+     * Read per query rather than captured, so changing the floor in settings
+     * takes effect on the next search instead of the next launch.
+     */
+    private val minScoreProvider: () -> Float = { DEFAULT_MIN_SCORE },
 ) {
 
     /**
@@ -106,7 +111,7 @@ class SearchNotes(
     suspend fun search(
         query: String,
         limit: Int = 20,
-        minScore: Float = DEFAULT_MIN_SCORE,
+        minScore: Float = minScoreProvider(),
     ): List<Result> = withContext(Dispatchers.Default) {
         if (query.isBlank()) return@withContext emptyList()
 

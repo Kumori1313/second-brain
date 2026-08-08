@@ -108,6 +108,24 @@ fun LoamScreen(viewModel: SearchViewModel) {
                     onClick = { tab = TAB_ASK },
                     text = { Text("Ask") },
                 )
+                Tab(
+                    selected = tab == TAB_SETTINGS,
+                    onClick = { tab = TAB_SETTINGS },
+                    text = { Text("Settings") },
+                )
+            }
+
+            if (tab == TAB_SETTINGS) {
+                SettingsPane(
+                    state = state,
+                    tuning = state.tuning,
+                    onTuningChange = viewModel::onTuningChange,
+                    onResetTuning = viewModel::onResetTuning,
+                    onPickVault = { pickVault.launch(null) },
+                    onPickModel = onPickModel,
+                    onReindex = viewModel::reindex,
+                )
+                return@Column
             }
 
             if (tab == TAB_ASK) {
@@ -140,11 +158,7 @@ fun LoamScreen(viewModel: SearchViewModel) {
                 singleLine = true,
             )
 
-            IndexStatusBar(
-                state = state,
-                onReindex = viewModel::reindex,
-                onChangeVault = { pickVault.launch(null) },
-            )
+            IndexStatusBar(state = state, onReindex = viewModel::reindex)
 
             HorizontalDivider()
 
@@ -210,7 +224,6 @@ private fun EmptyVault(onPick: () -> Unit) {
 private fun IndexStatusBar(
     state: SearchViewModel.UiState,
     onReindex: () -> Unit,
-    onChangeVault: () -> Unit,
 ) {
     Column(Modifier.padding(vertical = 8.dp)) {
         Row(
@@ -231,8 +244,9 @@ private fun IndexStatusBar(
                 modifier = Modifier.weight(1f),
             )
             if (!state.indexing) {
+                // "Change vault" moved to Settings; Reindex stays because it
+                // is the one action tied to what is on screen.
                 TextButton(onClick = onReindex) { Text("Reindex") }
-                TextButton(onClick = onChangeVault) { Text("Change") }
             }
         }
         if (state.indexing) {
@@ -466,3 +480,4 @@ private fun openUri(
 
 private const val TAB_SEARCH = 0
 private const val TAB_ASK = 1
+private const val TAB_SETTINGS = 2
