@@ -32,13 +32,19 @@ These are acceptance criteria, not aspirations. Anything that violates one gets 
 Expected output, in full:
 
 ```
+uses-permission: name='android.permission.USE_BIOMETRIC'
+uses-permission: name='android.permission.USE_FINGERPRINT'
 uses-permission: name='android.permission.WAKE_LOCK'
 uses-permission: name='android.permission.RECEIVE_BOOT_COMPLETED'
 uses-permission: name='android.permission.FOREGROUND_SERVICE'
 uses-permission: name='dev.loam.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION'
 ```
 
-The first three come from WorkManager and are what let a long index survive the screen turning off and resume after a reboot. The fourth is a self-scoped signature permission AndroidX injects for local broadcasts; it grants nothing outward. `ACCESS_NETWORK_STATE` also arrives from WorkManager and is stripped with `tools:node="remove"` — it grants no data access, but shipping a permission with "NETWORK" in its name would undercut principle #1 for anyone reading an F-Droid listing.
+The two biometric entries come from `androidx.biometric` and back the optional index-protection setting; they let the app *ask the OS* to authenticate you and grant access to nothing. `USE_FINGERPRINT` is the deprecated pre-API-28 spelling and is kept because `minSdk` is 26.
+
+`WAKE_LOCK`, `RECEIVE_BOOT_COMPLETED` and `FOREGROUND_SERVICE` come from WorkManager and are what let a long index survive the screen turning off and resume after a reboot. The last is a self-scoped signature permission AndroidX injects for local broadcasts; it grants nothing outward. `ACCESS_NETWORK_STATE` also arrives from WorkManager and is stripped with `tools:node="remove"` — it grants no data access, but shipping a permission with "NETWORK" in its name would undercut principle #1 for anyone reading an F-Droid listing.
+
+Not one of them reaches the network.
 
 ## Status
 

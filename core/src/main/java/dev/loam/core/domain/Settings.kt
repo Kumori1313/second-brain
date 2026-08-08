@@ -1,6 +1,8 @@
 package dev.loam.core.domain
 
 import android.content.Context
+import dev.loam.core.store.DatabaseKey
+import dev.loam.core.store.KeyProtection
 
 /**
  * The constants this project measured its way to, made adjustable.
@@ -56,7 +58,16 @@ data class Tuning(
     }
 }
 
-class Settings(context: Context) {
+class Settings(private val context: Context) {
+
+    /**
+     * Read-only here on purpose. Changing level re-seals the passphrase under a
+     * new key, which may require authentication and therefore an Activity — so
+     * it goes through the UI's change flow rather than a property setter that
+     * could silently fail.
+     */
+    val keyProtection: KeyProtection
+        get() = DatabaseKey.protection(context)
 
     private val prefs =
         context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)

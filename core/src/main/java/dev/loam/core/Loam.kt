@@ -11,6 +11,7 @@ import dev.loam.core.domain.SearchNotes
 import dev.loam.core.domain.Settings
 import dev.loam.core.domain.VaultLocation
 import dev.loam.core.embed.Embedder
+import dev.loam.core.store.DatabaseKey
 import dev.loam.core.llm.LlmEngine
 import dev.loam.core.embed.WordPieceTokenizer
 import dev.loam.core.vault.TokenCounter
@@ -27,6 +28,10 @@ class Loam private constructor(private val context: Context) {
     val vaultLocation by lazy { VaultLocation(context) }
     val modelLocation by lazy { ModelLocation(context) }
     val settings by lazy { Settings(context) }
+
+    /** True when the index cannot be opened until the user authenticates. */
+    val isIndexLocked: Boolean
+        get() = DatabaseKey.isLocked(context)
     val indexStats by lazy { IndexStats(context) }
     val indexVault by lazy { IndexVault(context, ::newEmbedder, tokenCounter) }
     val searchNotes by lazy {

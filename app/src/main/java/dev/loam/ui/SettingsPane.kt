@@ -1,5 +1,6 @@
 package dev.loam.ui
 
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -8,11 +9,13 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -23,6 +26,7 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import dev.loam.core.domain.Tuning
+import dev.loam.core.store.KeyProtection
 import kotlin.math.roundToInt
 
 /**
@@ -45,6 +49,8 @@ fun SettingsPane(
     onPickVault: () -> Unit,
     onPickModel: () -> Unit,
     onReindex: () -> Unit,
+    keyProtection: KeyProtection,
+    onKeyProtectionChange: (KeyProtection) -> Unit,
 ) {
     Column(
         modifier = Modifier
@@ -154,7 +160,80 @@ fun SettingsPane(
 
         HorizontalDivider(Modifier.padding(vertical = 8.dp))
 
+        SectionTitle("Index protection")
+        Text(
+            "The index stores your note text verbatim, so it is about as " +
+                "sensitive as the notes. It is always encrypted with a key the " +
+                "device hardware holds; this chooses what unlocks that key.",
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Spacer(Modifier.height(8.dp))
+
+        // Each option states its cost, like the tunables above. Two of the three
+        // trade background freshness for protection, and that is not something a
+        // user can be expected to infer from a label.
+        ProtectionChoice(
+            selected = keyProtection == KeyProtection.OFF,
+            label = "Off",
+            detail = "No prompt. The index opens whenever the app runs. " +
+                "Still hardware-sealed, so it cannot simply be copied off the device.",
+            onClick = { onKeyProtectionChange(KeyProtection.OFF) },
+        )
+        ProtectionChoice(
+            selected = keyProtection == KeyProtection.DEVICE_UNLOCK,
+            label = "Require a recent device unlock",
+            detail = "No prompt in normal use — unlocking your phone is enough. " +
+                "An extracted index is unreadable on a locked device. Background " +
+                "reindexing waits for the next unlock if the phone has been idle.",
+            onClick = { onKeyProtectionChange(KeyProtection.DEVICE_UNLOCK) },
+        )
+        ProtectionChoice(
+            selected = keyProtection == KeyProtection.EVERY_TIME,
+            label = "Ask every time Loam opens",
+            detail = "Fingerprint or PIN on every launch — the only level that " +
+                "stops someone holding your unlocked phone. Turns off periodic " +
+                "reindexing entirely, since a background pass has nobody to ask.",
+            onClick = { onKeyProtectionChange(KeyProtection.EVERY_TIME) },
+        )
+        Spacer(Modifier.height(4.dp))
+        Text(
+            "Changing this re-seals the key. If it ever becomes unusable the " +
+                "worst case is a reindex — your notes are plain files and are " +
+                "never touched.",
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+
+        HorizontalDivider(Modifier.padding(vertical = 8.dp))
+
         TextButton(onClick = onResetTuning) { Text("Reset to measured defaults") }
+    }
+}
+
+@Composable
+private fun ProtectionChoice(
+    selected: Boolean,
+    label: String,
+    detail: String,
+    onClick: () -> Unit,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick)
+            .padding(vertical = 6.dp),
+    ) {
+        RadioButton(selected = selected, onClick = onClick)
+        Spacer(Modifier.width(8.dp))
+        Column {
+            Text(label, style = MaterialTheme.typography.bodyMedium)
+            Text(
+                detail,
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
     }
 }
 

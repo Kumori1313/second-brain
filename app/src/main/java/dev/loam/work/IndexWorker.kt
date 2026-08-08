@@ -108,6 +108,11 @@ class IndexWorker(
             )
         }
 
+        /** Used when key protection makes unattended indexing impossible. */
+        fun cancelPeriodic(context: Context) {
+            WorkManager.getInstance(context).cancelUniqueWork(UNIQUE_PERIODIC)
+        }
+
         fun cancelAll(context: Context) {
             WorkManager.getInstance(context).apply {
                 cancelUniqueWork(UNIQUE_MANUAL)

@@ -124,6 +124,19 @@ fun LoamScreen(viewModel: SearchViewModel) {
                     onPickVault = { pickVault.launch(null) },
                     onPickModel = onPickModel,
                     onReindex = viewModel::reindex,
+                    keyProtection = state.keyProtection,
+                    onKeyProtectionChange = { level ->
+                        val activity = context as? androidx.fragment.app.FragmentActivity
+                        if (activity == null) {
+                            viewModel.onProtectionChanged(
+                                IllegalStateException("No activity to authenticate with")
+                            )
+                        } else {
+                            changeIndexProtection(activity, level) { failure ->
+                                viewModel.onProtectionChanged(failure)
+                            }
+                        }
+                    },
                 )
                 return@Column
             }
@@ -360,7 +373,7 @@ private fun ResultCard(
 }
 
 @Composable
-private fun Centered(content: @Composable () -> Unit) {
+fun Centered(content: @Composable () -> Unit) {
     Column(
         modifier = Modifier
             .fillMaxSize()
