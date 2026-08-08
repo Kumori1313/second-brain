@@ -12,7 +12,6 @@ import dev.loam.core.Loam
 import dev.loam.core.domain.AskQuestion
 import dev.loam.core.domain.SearchNotes
 import dev.loam.core.domain.Tuning
-import dev.loam.core.store.KeyProtection
 import dev.loam.work.IndexWorker
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
@@ -47,7 +46,6 @@ class SearchViewModel(app: Application) : AndroidViewModel(app) {
         val tuning: Tuning = Tuning(),
         /** Last path segment of the vault URI — enough to recognise it. */
         val vaultName: String? = null,
-        val keyProtection: KeyProtection = KeyProtection.OFF,
     )
 
     /**
@@ -100,7 +98,6 @@ class SearchViewModel(app: Application) : AndroidViewModel(app) {
             modelName = loam.modelLocation.displayName,
             tuning = loam.settings.tuning,
             vaultName = loam.vaultLocation.treeUri?.lastPathSegment,
-            keyProtection = loam.settings.keyProtection,
         )
     )
     val state: StateFlow<UiState> = _state.asStateFlow()
@@ -183,31 +180,6 @@ class SearchViewModel(app: Application) : AndroidViewModel(app) {
 
     fun onResetTuning() = onTuningChange(Tuning())
 
-    /**
-     * Re-seals the passphrase under a key with the chosen policy, and keeps the
-     * periodic reindex consistent with it.
-     *
-     * [KeyProtection.EVERY_TIME] cancels the schedule outright rather than
-     * letting background passes fail to decrypt. A pass that silently stops
-     * working is the exact failure this project already fixed once, in
-     * `ensurePeriodicIndexing`; recreating it as a side effect of a security
-     * setting would be worse, because the cause would be even less visible.
-     */
-    fun onKeyProtectionChange(level: KeyProtection) {
-        val result = runCatching { loam.settings.keyProtection = level }
-        val stored = loam.settings.keyProtection
-        _state.value = _state.value.copy(
-            keyProtection = stored,
-            error = result.exceptionOrNull()?.let { "Could not change protection: ${it.message}" },
-        )
-
-        if (stored.allowsBackgroundIndexing) {
-            IndexWorker.schedulePeriodic(getApplication())
-        } else {
-            IndexWorker.cancelPeriodic(getApplication())
-        }
-    }
-
     fun onModelPicked(uri: Uri) {
         loam.modelLocation.save(uri)
         _state.value = _state.value.copy(
@@ -244,9 +216,6 @@ class SearchViewModel(app: Application) : AndroidViewModel(app) {
      */
     private fun ensurePeriodicIndexing() {
         if (loam.vaultLocation.treeUri == null) return
-        // A key that needs authentication per use cannot be reached by an
-        // unattended worker, so there is nothing to schedule.
-        if (!loam.settings.keyProtection.allowsBackgroundIndexing) return
         IndexWorker.schedulePeriodic(getApplication())
     }
 
