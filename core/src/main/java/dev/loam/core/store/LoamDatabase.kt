@@ -42,7 +42,12 @@ abstract class LoamDatabase : RoomDatabase() {
 
         private fun build(context: Context): LoamDatabase {
             System.loadLibrary("sqlcipher")
-            val passphrase = DatabaseKey.getOrCreate(context)
+            val passphrase = DatabaseKey.getOrCreate(context) {
+                // The existing file is encrypted with a passphrase that can no
+                // longer be recovered, so SQLCipher could never open it. Drop it
+                // and let the next index rebuild — the notes are untouched.
+                context.deleteDatabase(NAME)
+            }
 
             return Room.databaseBuilder(context, LoamDatabase::class.java, NAME)
                 .openHelperFactory(SupportOpenHelperFactory(passphrase))

@@ -4,6 +4,7 @@ import android.content.Context
 import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
 import android.util.Base64
+import android.util.Log
 import java.security.KeyStore
 import javax.crypto.Cipher
 import javax.crypto.KeyGenerator
@@ -26,12 +27,23 @@ import javax.crypto.spec.GCMParameterSpec
  * ~40 lines of visible cryptography versus a dependency, and Core principle #4
  * asks for auditable over convenient.
  *
- * Phase 3 layers BiometricPrompt on top by requiring user authentication on the
- * Keystore key. That is a spec change on the key, not a re-encryption, so it
- * costs no migration.
+ * ### Recovery
+ *
+ * A Keystore key can stop matching its ciphertext — deleted, invalidated by a
+ * credential change, or lost to a botched migration. That must not be fatal:
+ * the index is derived data, so the passphrase is regenerated and the caller
+ * asked to drop the database, costing a reindex rather than anything the user
+ * cannot get back.
+ *
+ * This is not hypothetical. An index-protection feature was added and reverted
+ * after exactly this: it deleted the old key before sealing under the new one,
+ * the seal then failed because the new key itself required authentication, and
+ * the passphrase became unrecoverable. Any future attempt at authenticated keys
+ * must seal successfully *before* the old key is touched.
  */
 object DatabaseKey {
 
+    private const val TAG = "LoamKey"
     private const val PREFS = "loam_key_store"
     private const val PREF_SEALED = "sealed_passphrase"
     private const val KEY_ALIAS = "loam_db_key"
@@ -41,12 +53,25 @@ object DatabaseKey {
     private const val GCM_IV_BYTES = 12
     private const val PASSPHRASE_BYTES = 32
 
+    /**
+     * @param onKeyLost invoked when a sealed passphrase exists but cannot be
+     *   read, immediately before a new one is generated. The caller must drop
+     *   the database, since it is encrypted with a passphrase that is now gone.
+     */
     @Synchronized
-    fun getOrCreate(context: Context): ByteArray {
+    fun getOrCreate(context: Context, onKeyLost: () -> Unit = {}): ByteArray {
         val prefs = context.applicationContext
             .getSharedPreferences(PREFS, Context.MODE_PRIVATE)
 
-        prefs.getString(PREF_SEALED, null)?.let { return unseal(it) }
+        prefs.getString(PREF_SEALED, null)?.let { sealed ->
+            runCatching { unseal(sealed) }.getOrNull()?.let { return it }
+            // Unreadable rather than absent: the key behind this ciphertext is
+            // gone or no longer matches. Crashing here would strand the app on
+            // every launch with no way out but clearing app data.
+            Log.w(TAG, "sealed passphrase unreadable — regenerating; index will be rebuilt")
+            clear(context)
+            onKeyLost()
+        }
 
         val passphrase = ByteArray(PASSPHRASE_BYTES).also {
             java.security.SecureRandom().nextBytes(it)
@@ -60,7 +85,7 @@ object DatabaseKey {
     fun clear(context: Context) {
         context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
             .edit().remove(PREF_SEALED).commit()
-        keyStore().deleteEntry(KEY_ALIAS)
+        runCatching { keyStore().deleteEntry(KEY_ALIAS) }
     }
 
     private fun seal(plaintext: ByteArray): String {
