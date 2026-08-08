@@ -60,7 +60,7 @@ Domain layer (use cases)
 | Vector search | Brute-force cosine similarity for MVP; add **sqlite-vec** (MIT/Apache-2.0, confirmed to run on Android via precompiled loadable extensions) only if a vault outgrows it | Personal note collections are realistically low thousands of chunks — brute force is fast enough and has zero exotic dependencies | **ObjectBox** — genuinely excellent API and the first real on-device vector DB for Android, but its native engine ships under the proprietary "ObjectBox Binary License," not an OSI-approved one. F-Droid maintainers have explicitly flagged apps using it as unusable for F-Droid. Ruling it out now avoids a rewrite later. |
 | Embedding model | **EmbeddingGemma** (308M params, small enough to run in well under 200MB of RAM when quantized, purpose-built for on-device RAG) as default; **MiniLM-L6-v2** (Apache-2.0, ~80MB) as an alternate build flavor | EmbeddingGemma is currently the strongest open embedding model under 500M params; MiniLM is smaller and fully, unambiguously OSI-licensed | Cloud embedding APIs — ruled out immediately, breaks principle #1 |
 | Local LLM runtime | **Track A, chosen and shipped:** llama.cpp via JNI, running GGUF models. Track B (a Rust core via UniFFI) stays possible behind the `LlmEngine` interface | Track A is the well-trodden path other FOSS on-device apps use. Track B reuses the Cubiomes-FFI pattern from the Minecraft seed-map project, and leaves you with a portable engine you could reuse in a future desktop build | Google AI Edge / LiteRT LLM Inference API — solid, Apache-2.0, and genuinely standalone (no Play Services needed at runtime), but it's still Google's SDK — worth weighing against the point of the project |
-| Encryption at rest | SQLCipher (public-domain SQLite core, Apache-2.0 Android bindings), key wrapped by an Android Keystore AES-GCM key. **The "AndroidX Biometric for unlock" half is unbuilt and under review** — see Phase 3 | Notes are personal by definition; encrypt the derived index too, don't just assume the OS handles it | Unencrypted Room DB — simpler, but no at-rest protection if the device is lost or compromised. A biometric prompt per launch was the original plan and fights Phase 3's exit criterion for little gain against an already-unlocked device |
+| Encryption at rest | SQLCipher (public-domain SQLite core, Apache-2.0 Android bindings), key wrapped by an Android Keystore AES-GCM key. Authentication is a **user choice of three levels** — off, recent device unlock, or per launch — not the single "AndroidX Biometric for unlock" this row originally specified; see Phase 3 | Notes are personal by definition; encrypt the derived index too, don't just assume the OS handles it. The tradeoff runs in three directions at once — protection, prompt friction, background freshness — so no single point on it is right for everyone | Unencrypted Room DB — simpler, but no at-rest protection if the device is lost. A biometric prompt per launch as the *only* option was the original plan, and fights the daily-driver exit criterion for little gain against an already-unlocked device |
 | Distribution | F-Droid, mirrored on GitHub Releases (Obtainium-friendly) | Matches the toolchain you already use | Play Store — would add a Google dependency purely for distribution |
 
 A note on the embedding-model choice and F-Droid: EmbeddingGemma ships under Google's Gemma license, which is permissive but not OSI-approved. Bundled that way, F-Droid would likely tag the app with the **Non-Free Assets** anti-feature (their term for non-libre non-code assets, which covers bundled model weights) — not a rejection, just an honest label. Shipping the MiniLM-L6-v2 flavor as an alternate build avoids the tag entirely, at some cost to embedding quality. Worth deciding on purpose rather than by accident.
@@ -416,9 +416,9 @@ Done:
 - ~~Conversation history in Ask.~~
 - Memory: the model loads on demand and is released in the background.
 - Native libraries aligned to 16 KB pages.
+- ~~Key hardening~~ — shipped as a three-way choice rather than the single design the table above described. See below; it took a revert to get right.
 
 Remaining:
-- Key hardening. The design above says "SQLCipher + AndroidX Biometric for unlock" and that is unimplemented: `DatabaseKey` wraps a random key with a Keystore AES-GCM key that sets no `setUserAuthenticationRequired`, so the index decrypts whenever the app runs. **The literal design is probably wrong, though.** A biometric prompt per launch fights this phase's own exit criterion and buys little against an already-unlocked device; binding the Keystore key to device credentials with a validity window defends the same thing — an extracted database on a locked device — with no prompt in normal use. Decide deliberately rather than implementing the sentence.
 - Surface periodic runs in the UI. The ViewModel observes only `UNIQUE_MANUAL`, so a background pass is invisible and the Reindex button stays live during one.
 - Recalibrate `DEFAULT_MIN_SCORE`, and consider a "show weak matches" affordance rather than discarding near-threshold hits. Half-answered already: the floor is now a slider, so the remaining question is a design one and is better answered by using it than by reasoning about it.
 - Exclude patterns and chunk size. Deliberately absent from Settings: both invalidate the stored index, which makes them a different kind of setting and one that needs a reindex flow first.
@@ -428,6 +428,39 @@ Remaining:
 - **Exit criteria:** daily-driver comfortable — you reach for it instead of manual grep.
 
 Struck from this list: *paginated/streamed indexing so a large vault doesn't freeze the UI on first run*. Indexing runs in WorkManager with per-stage progress and never blocked the UI. The related worry about the vector index living in heap was also misplaced — measured at 8 MB for 5,297 chunks and 77 MB at 50k. The actual memory problem was somewhere else entirely; see below.
+
+#### Index protection — offered rather than imposed, and it cost an index to build
+
+The architecture table said "SQLCipher + AndroidX Biometric for unlock". Taken literally that is wrong for this app: a prompt on every launch fights this phase's own exit criterion and buys little against a phone that is already unlocked. But binding the key to device credentials is not free either — **any** authentication-bound key degrades unattended indexing, because WorkManager runs precisely when the phone has been sitting locked.
+
+That makes it a genuine three-way tradeoff with no universally right point, which is the one good reason to make something a setting:
+
+| level | protection | prompt | periodic reindex |
+| --- | --- | --- | --- |
+| Off (default) | index readable if the database is extracted | none | works |
+| Device unlock | needs a recent unlock | none in normal use | waits for the next unlock |
+| Every time | needs authentication per session | on open | disabled outright |
+
+`EVERY_TIME` cancels the schedule rather than letting background passes fail to decrypt — a pass that silently stops working is the failure `ensurePeriodicIndexing` already exists to prevent, and recreating it as a side effect of a security setting would hide the cause even better.
+
+**The first attempt destroyed a real index**, and the sequence is worth keeping because every step looked reasonable:
+
+1. `setProtection` read the passphrase, **deleted the old Keystore key**, wrote the new level, then sealed under a new key.
+2. Sealing with an auth-per-use key itself requires authentication, so it threw.
+3. The old key was already gone and the stored ciphertext was now unreadable by anything. `keystore2: VERIFICATION_FAILED` on every launch, with no way out but clearing app data.
+
+A class comment had asserted that adding authentication was "a spec change on the key, not a re-encryption, so it costs no migration". A Keystore key's authentication policy is fixed at generation; that sentence was simply false and it is what made the ordering look safe.
+
+Two more bugs surfaced only while verifying the fix, and the second was worse than the original:
+
+- **Android does not report per-use authentication as `UserNotAuthenticatedException`.** It arrives as `javax.crypto.IllegalBlockSizeException` wrapping `android.security.KeyStoreException: Key user not authenticated (internal Keystore code: -26)`. Catching the type matched nothing. In the change flow that meant no prompt ever appeared. In the unwrap path it was destructive: an unreadable seal is treated as a lost key and regenerated, so the first locked start under either level would have mistaken "not authenticated yet" for "key destroyed" and thrown the index away again by a different route. Detection now walks the cause chain and matches the Keymaster code.
+- **A `Cipher` that has already thrown from `doFinal` cannot be handed to a `CryptoObject`.** Attempting the seal first and prompting afterwards left the prompt silently never appearing.
+
+The fix is ordering enforced by structure rather than by care: two Keystore aliases with the active one recorded, a change builds a whole new key at the spare alias and seals under it, and only once that has *succeeded* does the pointer move and the old key get deleted. A cancelled prompt leaves the previous key working — verified by cancelling one and confirming 5,297 chunks still read.
+
+Recovery was added alongside, and makes true a claim the UI was already making. An unreadable seal now regenerates the passphrase and drops the database, costing a reindex rather than stranding the app. "The worst case is a reindex" was written into the setting's own description while the code would in fact brick it.
+
+**The testing lesson, which is the transferable part:** each level was verified in isolation and the *transition* between them never was — and the transition is exactly where it broke. Verifying states while ignoring state changes is the same shape as a test environment more permissive than production.
 
 #### Phase 3 findings
 
@@ -470,6 +503,7 @@ This one is worth separating from the rest of the project's near-misses. It was 
 - **Small-model hallucination survives RAG.** Grounding reduces it, doesn't eliminate it — the "sources used" panel is doing real work here, not decoration.
 - **SAF has no true background filesystem watch.** Periodic + manual reindex is the honest architecture, not a stopgap.
 - **First index of a large, long-lived vault will be slow and battery-heavy.** Needs a visible progress state; shouldn't run silently in the background on first launch.
+- **Testing states is not testing transitions.** Index protection was verified at each of its three levels and shipped; it destroyed a real index on the *change* between two of them, which no test touched. The same shape as the entry below — the thing exercised was adjacent to the thing that mattered.
 - **A test environment that can do more than production proves nothing about production.** Three separate bugs in Phase 2 came from this, each with a green suite and a broken app: an APK packaged differently from the test APK, a fixture the app could open by path where the real file needs a SAF grant, and a prompt short enough to stay under a batch limit the real one exceeds. When a test constructs its own inputs, it tends to construct ones it can satisfy. Ask what the real path crosses that the fixture does not.
 - **"Newer, more capable, more features" keeps measuring slower.** Q4_K_M lost to Q4_0; SVE2 lost to plain NEON+i8mm by 1.79x; ObjectBox, the most capable vector store, was ruled out on licensing. On-device, the sophisticated option is a hypothesis, not a default — and the wrong one produces correct output at half the speed, which no test catches.
 - **Recurring lesson, now five for five: a claim is only as good as your model of what produced it.** A debug build inflated cosine search 36x; characters stood in for tokens and hid 14% of the vault; a burst of three embeddings stood in for sustained load; two concurrent indexers stood in for one, inflating every indexing figure by 4x and inviting a thermal explanation for a contention problem; and a `.gitignore` comment stood in for the vault's actual contents, producing a confident and entirely wrong claim that the exit criteria were unmet. The last one is the sharpest, because it was written *into the section warning about this exact failure*. Documentation is a proxy too. Check the thing.
