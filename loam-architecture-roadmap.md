@@ -172,7 +172,7 @@ Built as a two-module Gradle build at the repo root (`:app` Compose UI, `:core` 
 
 **These are real notes.** The vault is the author's own Obsidian vault at `Documents/pensive`, `.obsidian` config and all — not a fixture. A previous revision of this section claimed the opposite and marked the exit criteria unmet; that was read off a stale `.gitignore` comment about cloning a public vault, without checking whether the directory matched it. It did not.
 
-One narrower caveat does survive. **97% of the vault — 379 of 392 notes — sits under `linux/`**, so it is topically concentrated technical documentation in a uniform register. The constants fitted against it are therefore correctly tuned for *this* vault, which is the whole point of a personal tool: `DEFAULT_MIN_SCORE = 0.35`, `DEFAULT_MIN_TOKENS = 64`, and the 3.46 chars/token ratio behind the truncation fix. They should not be assumed to transfer to a vault of short captures, daily journals, or non-Latin scripts — which matters only once Loam is distributed to anyone else.
+One narrower caveat does survive. **97% of the vault — 379 of 392 notes — sits under `linux/`**, so it is topically concentrated technical documentation in a uniform register. The constants fitted against it are therefore correctly tuned for *this* vault, which is the whole point of a personal tool: `DEFAULT_MIN_SCORE = 0.44`, `DEFAULT_MIN_TOKENS = 64`, and the 3.46 chars/token ratio behind the truncation fix. They should not be assumed to transfer to a vault of short captures, daily journals, or non-Latin scripts — which matters only once Loam is distributed to anyone else.
 
 | Query | Top hit | Score |
 | --- | --- | --- |
@@ -187,7 +187,7 @@ None of those queries share vocabulary with the notes they found, which is the p
 Two findings worth carrying into Phase 3:
 
 - **Indexing appeared to run at ~116 ms/chunk against the 23–36 ms the spike measured — and the gap was self-inflicted.** Two indexers were racing each other. See "Why indexing looked slower than the spike suggested" below; the thread-priority and thermal explanations were both investigated first, and both were wrong about the magnitude.
-- **The relevance threshold has to be calibrated against real chunks, not sentences.** An initial 0.35 came from the spike's sentence-to-sentence scores (0.250 related vs 0.062 unrelated) and was far too low: chunks are long, so they carry a bit of everything and score moderately against any query. The banana-bread query returned confident-looking Linux notes at 0.19 until it was recalibrated against the measured spread. A later probe showed the cut is not free in the other direction either — a planted note on espresso scored 0.72 for a direct query but *under* 0.35 for "why is my shot running too fast", which it answers outright, while an unrelated Btrfs chunk cleared the bar at 0.36. 0.35 is a floor tuned to one corpus, not a constant.
+- **The relevance threshold has to be calibrated against real chunks, not sentences.** An initial 0.35 came from the spike's sentence-to-sentence scores (0.250 related vs 0.062 unrelated) and was far too low: chunks are long, so they carry a bit of everything and score moderately against any query. The banana-bread query returned confident-looking Linux notes at 0.19 until it was recalibrated against the measured spread. A later probe showed the cut is not free in the other direction either — a planted note on espresso scored 0.72 for a direct query but *under* 0.35 for "why is my shot running too fast", which it answers outright, while an unrelated Btrfs chunk cleared the bar at 0.36. 0.35 is a floor tuned to one corpus, not a constant. (Phase 3 re-measured it properly at 30 labelled queries and moved it to 0.44 — and found that the two score bands overlap, so no value separates them. See below.)
 
 Not yet done in Phase 1: no settings screen (chunk size, model choice, exclude patterns are all Phase 3), no biometric gate on the database key, and the index is loaded into heap whole — fine at 3,427 chunks, worth revisiting well before 50k.
 
@@ -420,9 +420,9 @@ Done:
 - ~~UI tests for the Search pane~~ — ten, which required extracting the pane first.
 - ~~Surface periodic runs in the UI~~ — half of it could not be done through WorkManager at all. See below.
 - ~~Tests for the index-work state machine~~ — thirteen, and the extraction that made them possible was the same move as the Search pane.
+- ~~Recalibrate `DEFAULT_MIN_SCORE`~~ — 0.35 → 0.44, plus the "show weak matches" reach that makes raising it safe. The measurement said something more useful than a number; see below.
 
 Remaining:
-- Recalibrate `DEFAULT_MIN_SCORE`, and consider a "show weak matches" affordance rather than discarding near-threshold hits. Half-answered already: the floor is now a slider, so the remaining question is a design one and is better answered by using it than by reasoning about it.
 - Exclude patterns and chunk size. Deliberately absent from Settings: both invalidate the stored index, which makes them a different kind of setting and one that needs a reindex flow first.
 - Share-sheet integration; consider a home-screen search widget.
 - Battery/thermal testing under a full-vault first index, worth redoing now that it is not measuring two indexers at once.
@@ -498,6 +498,26 @@ Worth naming for its shape rather than its content, because it is the same shape
 
 Two things about the tests themselves. The `assertDoesNotExist` assertions — no Reindex button mid-index, no "No good matches" before a search, no stale counts under an error — are the ones that pass for free if a string is renamed, so each has a positive counterpart asserting the same text *is* present in the state where it belongs. That pairing is what makes an absence assertion mean anything, and it is cheap. And the query field cannot be found by its label or placeholder: both are sibling nodes rather than part of the editable field's semantics, so `performTextInput` finds nothing to type into. It is matched by `hasSetTextAction()`.
 
+#### The relevance floor cannot separate relevant from irrelevant, and now says so
+
+Recalibration measured 30 probe queries against the real 5,297-chunk index, labelling each top hit by hand:
+
+| | top-1 score |
+| --- | --- |
+| direct on-topic questions | 0.520 – 0.820 |
+| conversational phrasings of answerable questions | 0.328 – 0.525 |
+| questions with nothing useful to show | 0.166 – 0.413 |
+
+**The bands overlap**, so no threshold separates them and the constant only chooses which mistake to make. That is the result worth keeping; the new number is a consequence of it.
+
+The first round of probing said the opposite, and would have supported almost any value. It used crisp on-topic queries against clearly off-domain noise — "encrypting a disk with LUKS" versus "banana bread recipe with walnuts" — which produced a clean gap between 0.328 and 0.520 and a comfortable story. Adding two categories collapsed it: conversational phrasings of questions the vault *does* answer ("I locked myself out and need to get back in" → BitLocker unlock and PAM lockout notes, 0.328), and near-domain questions where a long list-like chunk scores well on vocabulary alone ("configuring an Apache virtual host" → KVM network configuration, 0.453). A probe set built from the cases you can label confidently is a probe set built from the cases that were never in doubt.
+
+`0.35 → 0.44`, the midpoint between the highest wrong top hit (0.413) and the lowest right one (0.465). The old value sat 0.022 above the worst pure noise and let three unrelated top hits through; the new one halves the error count over the set. Everything in 0.42–0.45 scored identically, and thirty queries against one topically narrow vault does not justify more precision than that — which is an argument for the slider, not against the measurement.
+
+**"Show weak matches" is what makes raising it a change rather than a trade.** Two genuinely answerable questions score 0.328 and 0.353 and are now below the line. An empty result offers a second search at 0.7× the floor, and everything it returns is labelled as weak. Relative rather than fixed, so it tracks a floor the user has moved instead of quietly becoming a second setting.
+
+Two things the device caught that no test would have. **Storing a setting equal to its default froze it forever**: the recalibration would have reached nobody who had ever opened Settings, including the development device, which held `relevance_floor: 0.35` from a slider touch. Defaults are now stored as *absent*, so a re-measured constant reaches everyone who never expressed a preference and leaves alone everyone who did. This is a general hazard for a project whose defaults are measured constants and whose method is re-measuring them. And **the new button was off-screen exactly when it was needed** — the activity is edge-to-edge, so `adjustResize` never shrinks the window, and the centred empty state sat under the keyboard, which is the state you are always in the moment after typing a query that found nothing.
+
 **The same extraction, a second time, on the piece that actually branches.** Surfacing periodic runs left the ViewModel holding the only real decision logic in the feature — which of the two unique works is running, which finish to react to, which to ignore as a replay — with the pane and the run log tested on either side of it and nothing on the thing between them. Splitting the decision (`IndexWorkWatcher`) from acting on it made thirteen tests possible with no WorkManager, database or embedder. That this was the second instance in two features suggests the rule generalises: when a component is hard to test, the useful question is what it is holding that it should not be, not how to build a harness big enough to contain it.
 
 Those tests are built from real `WorkInfo` values rather than an interface of our own, which is deliberate given how much of this file is about fixtures that were easier than the thing they stood for. It is what lets the suite exercise the state no manual run can produce: a periodic run "finishing" by returning to ENQUEUED. A watcher waiting for a terminal state would compile, pass anything written against a hand-rolled model, and leave the UI showing a background pass that ended hours ago.
@@ -522,7 +542,7 @@ Those tests are built from real `WorkInfo` values rather than an interface of ou
 
 ## Risks & open questions
 
-- **Everything so far is tuned to one topically narrow corpus.** The vault is real, but 97% of it is Linux documentation in a uniform register. The relevance floor, the minimum chunk size, and the characters-per-token assumption are all fitted to that, which is correct for a personal tool and a liability the moment anyone else installs it. A vault of short captures, daily journals, or mixed scripts is the first thing likely to break them.
+- **Everything so far is tuned to one topically narrow corpus.** The vault is real, but 97% of it is Linux documentation in a uniform register. The relevance floor, the minimum chunk size, and the characters-per-token assumption are all fitted to that, which is correct for a personal tool and a liability the moment anyone else installs it. A vault of short captures, daily journals, or mixed scripts is the first thing likely to break them. Recalibrating the floor in Phase 3 sharpened this rather than settling it: on *this* corpus the score bands for "can answer" and "cannot" already overlap, so the constant is not merely fitted to one vault, it is fitted to one vault and still wrong some of the time there.
 - **Small-model hallucination survives RAG.** Grounding reduces it, doesn't eliminate it — the "sources used" panel is doing real work here, not decoration.
 - **SAF has no true background filesystem watch.** Periodic + manual reindex is the honest architecture, not a stopgap.
 - **First index of a large, long-lived vault will be slow and battery-heavy.** Needs a visible progress state; shouldn't run silently in the background on first launch.
