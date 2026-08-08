@@ -60,7 +60,7 @@ Domain layer (use cases)
 | Vector search | Brute-force cosine similarity for MVP; add **sqlite-vec** (MIT/Apache-2.0, confirmed to run on Android via precompiled loadable extensions) only if a vault outgrows it | Personal note collections are realistically low thousands of chunks — brute force is fast enough and has zero exotic dependencies | **ObjectBox** — genuinely excellent API and the first real on-device vector DB for Android, but its native engine ships under the proprietary "ObjectBox Binary License," not an OSI-approved one. F-Droid maintainers have explicitly flagged apps using it as unusable for F-Droid. Ruling it out now avoids a rewrite later. |
 | Embedding model | **EmbeddingGemma** (308M params, small enough to run in well under 200MB of RAM when quantized, purpose-built for on-device RAG) as default; **MiniLM-L6-v2** (Apache-2.0, ~80MB) as an alternate build flavor | EmbeddingGemma is currently the strongest open embedding model under 500M params; MiniLM is smaller and fully, unambiguously OSI-licensed | Cloud embedding APIs — ruled out immediately, breaks principle #1 |
 | Local LLM runtime | **Track A, chosen and shipped:** llama.cpp via JNI, running GGUF models. Track B (a Rust core via UniFFI) stays possible behind the `LlmEngine` interface | Track A is the well-trodden path other FOSS on-device apps use. Track B reuses the Cubiomes-FFI pattern from the Minecraft seed-map project, and leaves you with a portable engine you could reuse in a future desktop build | Google AI Edge / LiteRT LLM Inference API — solid, Apache-2.0, and genuinely standalone (no Play Services needed at runtime), but it's still Google's SDK — worth weighing against the point of the project |
-| Encryption at rest | SQLCipher (public-domain SQLite core, Apache-2.0 Android bindings) + AndroidX Biometric for unlock | Notes are personal by definition; encrypt the derived index too, don't just assume the OS handles it | Unencrypted Room DB — simpler, but no at-rest protection if the device is lost or compromised |
+| Encryption at rest | SQLCipher (public-domain SQLite core, Apache-2.0 Android bindings), key wrapped by an Android Keystore AES-GCM key. **The "AndroidX Biometric for unlock" half is unbuilt and under review** — see Phase 3 | Notes are personal by definition; encrypt the derived index too, don't just assume the OS handles it | Unencrypted Room DB — simpler, but no at-rest protection if the device is lost or compromised. A biometric prompt per launch was the original plan and fights Phase 3's exit criterion for little gain against an already-unlocked device |
 | Distribution | F-Droid, mirrored on GitHub Releases (Obtainium-friendly) | Matches the toolchain you already use | Play Store — would add a Google dependency purely for distribution |
 
 A note on the embedding-model choice and F-Droid: EmbeddingGemma ships under Google's Gemma license, which is permissive but not OSI-approved. Bundled that way, F-Droid would likely tag the app with the **Non-Free Assets** anti-feature (their term for non-libre non-code assets, which covers bundled model weights) — not a rejection, just an honest label. Shipping the MiniLM-L6-v2 flavor as an alternate build avoids the tag entirely, at some cost to embedding quality. Worth deciding on purpose rather than by accident.
@@ -154,7 +154,7 @@ All three exit criteria met. Numbers are from a **release** build; see the note 
 Two findings worth carrying forward:
 
 - **Never benchmark a `debuggable` build.** The same code measured 533 ms at 50k as a debug build versus 13.81 ms as release — a **36x** difference, because `debuggable true` forces deoptimization support and blocks ART inlining. The debug numbers argued for adopting sqlite-vec; they were an artifact of the build type, not the algorithm.
-- **The SAF walk, not embedding, is the surprising cost.** 13.5 s to merely *enumerate* 392 files, before reading a byte. `DocumentFile` issues a separate ContentResolver query per node. Phase 1 should treat enumeration as its own progress-reported stage, and Phase 3's "paginated/streamed indexing" bullet should assume the walk is slow independent of vault size in bytes.
+- **The SAF walk, not embedding, is the surprising cost.** 13.5 s to merely *enumerate* 392 files, before reading a byte. `DocumentFile` issues a separate ContentResolver query per node. Phase 1 should treat enumeration as its own progress-reported stage. (Later: the `DocumentsContract` rewrite took this to 1.5 s, and the "paginated/streamed indexing" concern it fed has since been struck — see Phase 3.)
 
 Full-index estimate for this vault: ~3,300 chunks × ~25 ms ≈ 80 s of embedding plus 13.5 s of walking. Acceptable for a one-time index, but it needs visible progress rather than a spinner.
 
@@ -410,17 +410,51 @@ Still unproven, and it needs real app code: llama.cpp wants a filesystem path to
 Two operational traps, recorded because both cost real time. `-no-cnv` alone does not stop the current `llama-cli` entering its REPL — it needs `-st`, and without it the process spun out 160 MB of empty prompts. And short generations produce meaningless throughput figures: the same run that answered correctly reported 1.1 t/s, and a 7-token refusal reported 5.3 t/s, both dominated by fixed setup cost. Benchmark generation over a fixed token count or not at all.
 
 ### Phase 3 — Polish & real-world hardening
-- Paginated/streamed indexing so a large vault doesn't freeze the UI on first run.
-- Settings: model choice, quantization level, chunk size, folder exclude-patterns. Also `MAX_CHUNKS` and the context window, which are now dials the user can feel — six chunks is ~8–10 s to first token, and fewer trades grounding for latency.
-- Conversation history in Ask. Each question currently clears the KV cache and starts clean, which is right for independent questions and wrong for follow-ups.
-- Share-sheet integration; consider a home-screen search widget.
+
+Done:
+- ~~Settings screen~~ — three tunables that take effect without reindexing.
+- ~~Conversation history in Ask.~~
+- Memory: the model loads on demand and is released in the background.
+- Native libraries aligned to 16 KB pages.
+
+Remaining:
+- Key hardening. The design above says "SQLCipher + AndroidX Biometric for unlock" and that is unimplemented: `DatabaseKey` wraps a random key with a Keystore AES-GCM key that sets no `setUserAuthenticationRequired`, so the index decrypts whenever the app runs. **The literal design is probably wrong, though.** A biometric prompt per launch fights this phase's own exit criterion and buys little against an already-unlocked device; binding the Keystore key to device credentials with a validity window defends the same thing — an extracted database on a locked device — with no prompt in normal use. Decide deliberately rather than implementing the sentence.
 - Surface periodic runs in the UI. The ViewModel observes only `UNIQUE_MANUAL`, so a background pass is invisible and the Reindex button stays live during one.
-- Recalibrate `DEFAULT_MIN_SCORE` against a real vault, and consider showing near-threshold hits behind a "show weak matches" affordance rather than discarding them outright.
-- Battery/thermal testing under a full-vault first index — this is the real stress test, and worth redoing now that it is not measuring two indexers at once.
+- Recalibrate `DEFAULT_MIN_SCORE`, and consider a "show weak matches" affordance rather than discarding near-threshold hits. Half-answered already: the floor is now a slider, so the remaining question is a design one and is better answered by using it than by reasoning about it.
+- Exclude patterns and chunk size. Deliberately absent from Settings: both invalidate the stored index, which makes them a different kind of setting and one that needs a reindex flow first.
+- UI tests for the Search pane. Ask has twelve; `AskPaneTest` establishes the pattern.
+- Share-sheet integration; consider a home-screen search widget.
+- Battery/thermal testing under a full-vault first index, worth redoing now that it is not measuring two indexers at once.
 - **Exit criteria:** daily-driver comfortable — you reach for it instead of manual grep.
+
+Struck from this list: *paginated/streamed indexing so a large vault doesn't freeze the UI on first run*. Indexing runs in WorkManager with per-stage progress and never blocked the UI. The related worry about the vector index living in heap was also misplaced — measured at 8 MB for 5,297 chunks and 77 MB at 50k. The actual memory problem was somewhere else entirely; see below.
+
+#### Phase 3 findings
+
+**Warming the model at startup was wrong, and nothing looked wrong.** It was added in Phase 2 by analogy with the embedder. The analogy does not hold: warming the embedder costs ~600 ms and 22 MB, while warming the LLM put the process at **2.1 GB PSS**, about 849 MB of it the GGUF mapping. Those pages are private *clean*, so the kernel drops them rather than OOM — but Android's low-memory killer scores on PSS, so opening Loam to search made it a prime candidate for being reaped, and being reaped costs the warm search index too. Measured across a cycle:
+
+| state | PSS |
+| --- | --- |
+| launch, Search only | **277 MB** |
+| Ask tab opened | 2,195 MB |
+| backgrounded | **249 MB** |
+| foregrounded on Ask | 2,163 MB |
+
+The model now loads when Ask is first shown and is released whenever the app leaves the foreground. Reopening costs ~1.8 s, cheap because mmap maps the weights rather than reading them.
+
+**Native libraries were 4 KB-aligned and would not have loaded on a 16 KB-page device at all.** Every prebuilt dependency shipped aligned; everything `:llama` compiled did not. Android 15+ can run 16 KB pages and a Pixel 8/9 can enable it in developer options, so Ask would have failed outright there. NDK r27 makes alignment opt-in via `ANDROID_SUPPORT_FLEXIBLE_PAGE_SIZES`; r28 made it the default, which is why nothing complained until a device did.
+
+This one is worth separating from the rest of the project's near-misses. It was not a test more permissive than production — it was a *correct* test of a configuration that is not universal. The build succeeded, every test passed, and the app worked, because the test device uses 4 KB pages. No reasonable test would have caught it; the OS reported it. **Phase 4 should assert alignment in the build rather than wait for a warning.**
+
+**Settings surfaced a state that had quietly become ambiguous.** Since the model became lazily loaded, `ModelState.None` means both "no model configured" and "configured but not resident". Reading it alone printed "search works without one" directly beneath the model's own filename.
+
+**A stalled screenshot produced a confidently wrong bug report.** Conversation history was reported here as broken — the second turn "produced nothing" — on the strength of a scroll that had stopped moving. Logging at the commit point settled it in one run: both turns had always committed. The layout problem was real (oldest-first buried a new answer under a screen and a half of source cards, since the composer sits at the top here rather than the bottom), but the diagnosis was not. Instrument the state; do not read it off pixels.
 
 ### Phase 4 — F-Droid packaging & release
 - Reproducible build setup; a full license manifest (SQLCipher, sqlite-vec if used, llama.cpp, embedding model weights, each with correct SPDX identifiers).
+- **Assert 16 KB page alignment in the build.** Nothing here checks it, the app works on a 4 KB device regardless, and it took the OS reporting an incompatibility to notice. A `llvm-readelf` check over the packaged `.so` files is a few lines and turns a silent device-class failure into a build failure.
+- Note that `useLegacyPackaging = true` doubles the on-disk native footprint, since libraries are extracted at install. It is required — llama.cpp's CPU backends are `dlopen`'d by absolute path — but it belongs in the listing rather than being discovered in review.
+- `libonnxruntime.so` is 28.6 MB of the 39 MB native payload, larger than all of llama.cpp. If APK size becomes an issue, the embedder is the target, not the LLM.
 - Anti-feature self-assessment (see the Non-Free Assets note above); settle the EmbeddingGemma-vs-MiniLM question deliberately here if you haven't already.
 - Submit to fdroiddata; iterate through review.
 - **Exit criteria:** installable from F-Droid, or at minimum your own repo via Obtainium, with an honestly-labeled anti-feature list.
