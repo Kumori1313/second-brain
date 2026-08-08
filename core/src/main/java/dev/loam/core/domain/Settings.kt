@@ -38,18 +38,17 @@ data class Tuning(
     /**
      * Below this cosine score, a hit is called noise rather than a weak match.
      *
-     * Calibrated against a 3,427-chunk vault of Linux notes: real hits measured
-     * 0.66–0.68, pure noise 0.18–0.19. It has already misfired in both
-     * directions on that same vault — a note answering a question scored under
-     * it while an unrelated chunk cleared it at 0.36 — which is the argument
-     * for making it adjustable rather than for picking a better number.
+     * Re-measured on the 5,297-chunk vault with 30 labelled probe queries; see
+     * [SearchNotes.DEFAULT_MIN_SCORE] for the bands. They overlap, so this
+     * number picks which error to make rather than avoiding both — which is
+     * the argument for a slider, and for "show weak matches" beneath it.
      */
     val relevanceFloor: Float = DEFAULT_RELEVANCE_FLOOR,
 ) {
     companion object {
         const val DEFAULT_CHUNKS_PER_ANSWER = 6
         const val DEFAULT_CONTEXT_TOKENS = 4096
-        const val DEFAULT_RELEVANCE_FLOOR = 0.35f
+        const val DEFAULT_RELEVANCE_FLOOR = SearchNotes.DEFAULT_MIN_SCORE
 
         /** Ranges the UI offers. Wide enough to be useful, not to be absurd. */
         val CHUNKS_RANGE = 1..12
@@ -85,17 +84,36 @@ class Settings(private val context: Context) {
             contextTokens = prefs.getInt(KEY_CONTEXT, Tuning.DEFAULT_CONTEXT_TOKENS),
             relevanceFloor = prefs.getFloat(KEY_FLOOR, Tuning.DEFAULT_RELEVANCE_FLOOR),
         )
+        /**
+         * A value equal to the current default is stored as *absent*, not as
+         * itself.
+         *
+         * Every default here is a measured constant, and re-measuring is how
+         * this project fixes them. Writing the default down turns "I never
+         * touched this" into a deliberate-looking choice, and a later
+         * recalibration then silently fails to reach anyone who has ever opened
+         * Settings — which is exactly what happened when the relevance floor
+         * moved from 0.35 to 0.44. Storing only real deviations means a changed
+         * measurement reaches the people who never expressed a preference, and
+         * leaves alone the people who did.
+         */
         set(value) {
+            val floor = value.relevanceFloor.coerceIn(
+                Tuning.FLOOR_RANGE.start,
+                Tuning.FLOOR_RANGE.endInclusive,
+            )
+            val chunks = value.chunksPerAnswer.coerceIn(Tuning.CHUNKS_RANGE)
             prefs.edit()
-                .putInt(KEY_CHUNKS, value.chunksPerAnswer.coerceIn(Tuning.CHUNKS_RANGE))
-                .putInt(KEY_CONTEXT, value.contextTokens)
-                .putFloat(
-                    KEY_FLOOR,
-                    value.relevanceFloor.coerceIn(
-                        Tuning.FLOOR_RANGE.start,
-                        Tuning.FLOOR_RANGE.endInclusive,
-                    ),
-                )
+                .apply {
+                    if (chunks == Tuning.DEFAULT_CHUNKS_PER_ANSWER) remove(KEY_CHUNKS)
+                    else putInt(KEY_CHUNKS, chunks)
+
+                    if (value.contextTokens == Tuning.DEFAULT_CONTEXT_TOKENS) remove(KEY_CONTEXT)
+                    else putInt(KEY_CONTEXT, value.contextTokens)
+
+                    if (floor == Tuning.DEFAULT_RELEVANCE_FLOOR) remove(KEY_FLOOR)
+                    else putFloat(KEY_FLOOR, floor)
+                }
                 .apply()
         }
 

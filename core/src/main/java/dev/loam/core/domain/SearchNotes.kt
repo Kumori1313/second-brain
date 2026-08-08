@@ -170,24 +170,47 @@ class SearchNotes(
         /**
          * Below this, a hit is noise rather than a weak match.
          *
-         * Calibrated against the real index, not against intuition. Measured on
-         * a 3,427-chunk vault of Linux notes:
+         * Calibrated against the real index, not against intuition. Re-measured
+         * on the 5,297-chunk vault with 30 probe queries, scoring the top hit of
+         * each and labelling it by hand:
          *
-         *   "how do I set up a virtual machine"  -> 0.68, 0.67  (correct notes)
-         *   "banana bread recipe with walnuts"   -> 0.19, 0.18  (pure noise)
+         *   direct on-topic questions   0.520 – 0.820   (12 queries)
+         *   conversational phrasings    0.328 – 0.525   ( 4 with useful hits)
+         *   nothing useful to show      0.166 – 0.413   (12 queries)
+         *
+         * Those bands overlap, so no threshold separates them and the number is
+         * a choice about which error to make. This one is the midpoint of the
+         * gap between the highest wrong top hit (0.413, "I want to run Windows
+         * without rebooting" matching an NTFS repair note) and the lowest right
+         * one (0.465, "the laptop battery drains too fast"). It halves the
+         * error count of the previous 0.35, which sat only 0.022 above the
+         * worst pure noise and let three unrelated top hits through.
+         *
+         * What it costs is real and is why [WEAK_SCORE_RATIO] exists: two
+         * genuinely answerable questions score 0.328 and 0.353 and are now
+         * below the line. They are reachable on request rather than lost.
          *
          * An earlier value of 0.15 came from the spike's *sentence-to-sentence*
          * scores, where a related pair measured 0.250 against 0.062. Query-to-
          * chunk scores sit much higher: chunks are long, so they carry a bit of
-         * everything and score moderately against any query. That threshold let
-         * the banana-bread query return confident-looking Linux notes.
+         * everything and score moderately against any query.
          *
-         * Surfacing "no good matches" is a stated requirement, and it only
-         * works if this is calibrated to how the model scores the text it is
-         * actually being asked about. Recalibrate if the model, the chunk size,
-         * or the pooling ever changes.
+         * Thirty queries against one topically narrow vault does not justify
+         * three digits of confidence. Anything in 0.42–0.45 scored the same;
+         * this is why the value is a slider.
          */
-        const val DEFAULT_MIN_SCORE = 0.35f
+        const val DEFAULT_MIN_SCORE = 0.44f
+
+        /**
+         * How far below the floor "show weak matches" reaches.
+         *
+         * Relative rather than fixed, so it tracks a floor the user has moved
+         * instead of quietly becoming a second, unrelated setting. At the
+         * default floor this is 0.31, which is below both of the answerable
+         * questions the floor gives up and above all but one of the measured
+         * noise scores.
+         */
+        const val WEAK_SCORE_RATIO = 0.7f
         private const val SNIPPET_CHARS = 320
         private const val WARMUP_TEXT = "warm up the embedding session"
     }

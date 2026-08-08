@@ -62,6 +62,7 @@ class SearchPaneTest {
         onReindex: () -> Unit = {},
         onOpenResult: (SearchNotes.Result) -> Unit = {},
         onChooseOpener: () -> Unit = {},
+        onShowWeakMatches: () -> Unit = {},
     ) {
         compose.setContent {
             SearchPane(
@@ -70,6 +71,7 @@ class SearchPaneTest {
                 onReindex = onReindex,
                 onOpenResult = onOpenResult,
                 onChooseOpener = onChooseOpener,
+                onShowWeakMatches = onShowWeakMatches,
             )
         }
     }
@@ -126,6 +128,76 @@ class SearchPaneTest {
         // "Haven't searched yet" and "nothing matched" look identical in the
         // data and must not look identical on screen.
         compose.onNodeWithText("No good matches").assertDoesNotExist()
+    }
+
+    @Test
+    fun nothingFoundOffersTheReachBelowTheFloor() {
+        var asked = 0
+        show(
+            state = SearchViewModel.UiState(
+                hasVault = true,
+                query = "I locked myself out",
+                searched = true,
+                results = emptyList(),
+            ),
+            onShowWeakMatches = { asked++ },
+        )
+
+        // The floor sits where the two score bands overlap, so some answerable
+        // questions land under it. Offering the reach is what makes raising it
+        // safe; without this the recalibration just loses them.
+        compose.onNodeWithText("Show weak matches").assertIsDisplayed().performClick()
+
+        assertEquals(1, asked)
+    }
+
+    @Test
+    fun weakResultsAreLabelledAsWeak() {
+        show(
+            SearchViewModel.UiState(
+                hasVault = true,
+                searched = true,
+                weakMatches = true,
+                results = listOf(result(1, score = 0.33f)),
+            )
+        )
+
+        // What clears the floor only means something if these are visibly not
+        // that. An unlabelled weak result is worse than no result.
+        compose.onNodeWithText(
+            "Weak matches — below your relevance floor"
+        ).assertIsDisplayed()
+        compose.onNodeWithText("LUKS Setup").assertIsDisplayed()
+    }
+
+    @Test
+    fun ordinaryResultsCarryNoWeakLabel() {
+        show(
+            SearchViewModel.UiState(
+                hasVault = true,
+                searched = true,
+                results = listOf(result(1)),
+            )
+        )
+
+        compose.onNodeWithText("Weak matches", substring = true).assertDoesNotExist()
+    }
+
+    @Test
+    fun theReachIsNotOfferedTwice() {
+        show(
+            SearchViewModel.UiState(
+                hasVault = true,
+                searched = true,
+                weakMatches = true,
+                results = emptyList(),
+            )
+        )
+
+        // Already below the floor and still nothing. Offering the same button
+        // again would promise a second, deeper search that does not exist.
+        compose.onNodeWithText("Show weak matches").assertDoesNotExist()
+        compose.onNodeWithText("Nothing at all").assertIsDisplayed()
     }
 
     @Test

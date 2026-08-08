@@ -17,6 +17,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -169,6 +170,7 @@ fun LoamScreen(viewModel: SearchViewModel) {
                 onReindex = viewModel::reindex,
                 onOpenResult = { result -> openNote(context, opener, result) },
                 onChooseOpener = { showOpenWith = true },
+                onShowWeakMatches = viewModel::showWeakMatches,
             )
         }
     }
@@ -189,8 +191,18 @@ fun SearchPane(
     onReindex: () -> Unit,
     onOpenResult: (SearchNotes.Result) -> Unit,
     onChooseOpener: () -> Unit,
+    onShowWeakMatches: () -> Unit = {},
 ) {
-    Column(Modifier.fillMaxSize()) {
+    // imePadding because the activity is edge-to-edge, so `adjustResize` never
+    // shrinks the window and Compose has to apply the inset itself. Without it
+    // the empty state — which is centred in the full height — sits under the
+    // keyboard, and "Show weak matches" is off-screen in exactly the state it
+    // exists for: the moment after typing a query that found nothing.
+    Column(
+        Modifier
+            .fillMaxSize()
+            .imePadding()
+    ) {
         OutlinedTextField(
             value = state.query,
             onValueChange = onQueryChange,
@@ -213,7 +225,10 @@ fun SearchPane(
 
             state.searched && state.results.isEmpty() -> Centered {
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    Text("No good matches", style = MaterialTheme.typography.titleMedium)
+                    Text(
+                        if (state.weakMatches) "Nothing at all" else "No good matches",
+                        style = MaterialTheme.typography.titleMedium,
+                    )
                     Spacer(Modifier.height(8.dp))
                     Text(
                         // Saying so is a stated requirement: a weak match
@@ -221,20 +236,40 @@ fun SearchPane(
                         "Nothing in the index was close enough to be worth showing.",
                         style = MaterialTheme.typography.bodySmall,
                     )
+                    // The floor has to sit where the two score bands overlap, so
+                    // some questions the vault does answer land under it —
+                    // measured at 0.328 and 0.353 against a floor of 0.44.
+                    // Offering the reach is honest; quietly widening the search
+                    // would make "no good matches" mean nothing.
+                    if (!state.weakMatches) {
+                        TextButton(onClick = onShowWeakMatches) { Text("Show weak matches") }
+                    }
                 }
             }
 
-            else -> LazyColumn(
-                modifier = Modifier.fillMaxSize(),
-                verticalArrangement = Arrangement.spacedBy(8.dp),
-                contentPadding = androidx.compose.foundation.layout.PaddingValues(vertical = 12.dp),
-            ) {
-                items(state.results, key = { it.chunkId }) { result ->
-                    ResultCard(
-                        result = result,
-                        onClick = { onOpenResult(result) },
-                        onLongClick = onChooseOpener,
+            else -> Column(Modifier.fillMaxSize()) {
+                if (state.weakMatches) {
+                    // Labelled, always. What clears the floor is only worth
+                    // anything if these are visibly not that.
+                    Text(
+                        "Weak matches — below your relevance floor",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(top = 12.dp),
                     )
+                }
+                LazyColumn(
+                    modifier = Modifier.fillMaxSize(),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                    contentPadding = androidx.compose.foundation.layout.PaddingValues(vertical = 12.dp),
+                ) {
+                    items(state.results, key = { it.chunkId }) { result ->
+                        ResultCard(
+                            result = result,
+                            onClick = { onOpenResult(result) },
+                            onLongClick = onChooseOpener,
+                        )
+                    }
                 }
             }
         }

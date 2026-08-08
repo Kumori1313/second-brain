@@ -146,10 +146,11 @@ fun SettingsPane(
         Tunable(
             label = "Relevance floor",
             value = "%.2f".format(tuning.relevanceFloor),
-            detail = "Below this a hit is called noise and discarded. Calibrated " +
-                "against one vault of technical notes, where real hits scored " +
-                "0.66–0.68 and noise 0.18–0.19. Lower it if searches come back " +
-                "empty that should not; raise it if results look confident and wrong.",
+            detail = "Below this a hit is called noise and discarded. Measured on " +
+                "one vault of technical notes: direct questions scored 0.52–0.82, " +
+                "questions it could not answer 0.17–0.41. Those bands overlap, so " +
+                "this picks which mistake to make rather than avoiding both — when " +
+                "a search comes back empty, \"Show weak matches\" reaches below it.",
         ) {
             Slider(
                 value = tuning.relevanceFloor,

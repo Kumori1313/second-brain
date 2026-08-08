@@ -53,6 +53,12 @@ class SearchViewModel(app: Application) : AndroidViewModel(app) {
          * previous launch. Rendered as the dated fact it is, not as news.
          */
         val lastRun: IndexRunLog.Run? = null,
+        /**
+         * These results came from below the relevance floor and are shown
+         * because the user asked for them. They must stay labelled: the whole
+         * value of the floor is that what clears it means something.
+         */
+        val weakMatches: Boolean = false,
     )
 
     /**
@@ -366,7 +372,11 @@ class SearchViewModel(app: Application) : AndroidViewModel(app) {
         _state.value = _state.value.copy(query = query)
         searchJob?.cancel()
         if (query.isBlank()) {
-            _state.value = _state.value.copy(results = emptyList(), searched = false)
+            _state.value = _state.value.copy(
+                results = emptyList(),
+                searched = false,
+                weakMatches = false,
+            )
             return
         }
         searchJob = viewModelScope.launch {
@@ -491,14 +501,19 @@ class SearchViewModel(app: Application) : AndroidViewModel(app) {
         _state.value = _state.value.copy(ask = _state.value.ask.copy(asking = false))
     }
 
-    private suspend fun search(query: String) {
+    private suspend fun search(query: String, weak: Boolean = false) {
         _state.value = _state.value.copy(searching = true)
         try {
-            val results = loam.searchNotes.search(query)
+            val floor = loam.settings.tuning.relevanceFloor
+            val results = loam.searchNotes.search(
+                query,
+                minScore = if (weak) floor * SearchNotes.WEAK_SCORE_RATIO else floor,
+            )
             _state.value = _state.value.copy(
                 results = results,
                 searching = false,
                 searched = true,
+                weakMatches = weak,
                 error = null,
             )
         } catch (e: Exception) {
@@ -507,6 +522,22 @@ class SearchViewModel(app: Application) : AndroidViewModel(app) {
                 error = e.message ?: "Search failed",
             )
         }
+    }
+
+    /**
+     * Searches again below the floor, on request.
+     *
+     * The floor has to sit somewhere the two score bands overlap, so some
+     * questions the vault genuinely answers fall under it — measured at 0.328
+     * and 0.353 against a floor of 0.44. Discarding those silently is the
+     * failure this exists to prevent; the alternative of lowering the floor to
+     * catch them lets unrelated notes back in for everyone, all the time.
+     */
+    fun showWeakMatches() {
+        val query = _state.value.query
+        if (query.isBlank()) return
+        searchJob?.cancel()
+        searchJob = viewModelScope.launch { search(query, weak = true) }
     }
 
     private companion object {
