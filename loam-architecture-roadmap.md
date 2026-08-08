@@ -418,11 +418,12 @@ Done:
 - Native libraries aligned to 16 KB pages.
 - ~~Key hardening~~ — shipped as a three-way choice rather than the single design the table above described. See below; it took a revert to get right.
 - ~~UI tests for the Search pane~~ — ten, which required extracting the pane first.
+- ~~Surface periodic runs in the UI~~ — half of it could not be done through WorkManager at all. See below.
 
 Remaining:
-- Surface periodic runs in the UI. The ViewModel observes only `UNIQUE_MANUAL`, so a background pass is invisible and the Reindex button stays live during one.
 - Recalibrate `DEFAULT_MIN_SCORE`, and consider a "show weak matches" affordance rather than discarding near-threshold hits. Half-answered already: the floor is now a slider, so the remaining question is a design one and is better answered by using it than by reasoning about it.
 - Exclude patterns and chunk size. Deliberately absent from Settings: both invalidate the stored index, which makes them a different kind of setting and one that needs a reindex flow first.
+- Tests for `SearchViewModel`'s work observation. The pane and the run log are both covered; the state machine between them — which run is which, which finish to react to, which to ignore as a replay — is the piece with actual branching and has none.
 - Share-sheet integration; consider a home-screen search widget.
 - Battery/thermal testing under a full-vault first index, worth redoing now that it is not measuring two indexers at once.
 - **Exit criteria:** daily-driver comfortable — you reach for it instead of manual grep.
@@ -480,6 +481,18 @@ The model now loads when Ask is first shown and is released whenever the app lea
 This one is worth separating from the rest of the project's near-misses. It was not a test more permissive than production — it was a *correct* test of a configuration that is not universal. The build succeeded, every test passed, and the app worked, because the test device uses 4 KB pages. No reasonable test would have caught it; the OS reported it. **Phase 4 should assert alignment in the build rather than wait for a warning.**
 
 **Settings surfaced a state that had quietly become ambiguous.** Since the model became lazily loaded, `ModelState.None` means both "no model configured" and "configured but not resident". Reading it alone printed "search works without one" directly beneath the model's own filename.
+
+**A periodic run cannot report what it did, and that is not a WorkManager oversight.** Watching `UNIQUE_MANUAL` alone left a background pass invisible twice: no progress while it ran, and the Reindex button live throughout, so the only thing the user could do about a pass already in flight was enqueue one that could only skip. Observing both unique names fixes the live half.
+
+The other half has no fix in that direction. A `PeriodicWorkRequest` never reaches a terminal state — it returns to ENQUEUED after each pass — so `WorkInfo.outputData` stays empty for it and the entire result-reporting path the manual run uses does not exist. The outcome has to come from somewhere both kinds of run can reach, which here is the worker writing it down itself. Persisting it rather than holding it in memory is the actual point: the pass runs every six hours, so nearly every one completes with the app closed and the run worth reporting is one this process never saw.
+
+That turned the old replay problem inside out. The manual path needed a guard because a days-old SUCCEEDED, replayed to every new subscriber on launch, looked exactly like a run that had just finished. Stated as a dated fact — *background pass · no changes · 2 hours ago* — a result from a previous launch stops being a bug and becomes the feature. The guard is still there, but now it only governs whether to reload the index, not what to display.
+
+**`cmd jobscheduler run -f` cannot drive periodic work, and now there is a reason on the record rather than an observation.** WorkManager answers `Delaying execution for IndexWorker because it is being executed before schedule` and reschedules — the guard is WorkManager's, above JobScheduler, so forcing the job cannot reach it. The `-n androidx.work.systemjobscheduler` namespace flag, which looked like the missing piece, gets as far as `Running job [FORCED]` and no further. Verification therefore meant a locally shortened interval and a real pass: recorded `periodic=true`, and the line appeared in the already-open app without a relaunch, which is also the only way to check that the worker's write reaches the UI's flow rather than merely the file.
+
+Worth naming for its shape rather than its content, because it is the same shape as every entry in the Risks list: the part that cannot be tested cheaply is the part the feature is *about*. Both ends of the chain have tests — the pane renders a fabricated run, the log round-trips a fabricated write — and neither could have told us whether a periodic pass reaches either of them. Ten minutes of waiting bought the one fact no fixture could.
+
+**A screenshot caught a wording bug the tests were structurally unable to.** `DateUtils.getRelativeTimeSpanString` renders anything under a minute as "0 minutes ago" — truthful, and the single phrasing here that reads like a failure. It is also what every tap of Reindex produced, so it would have been the most-seen state of the feature. Every test used a fabricated timestamp, and none happened to use *now*; the device did, immediately. Now "just now", with a test that would have caught it.
 
 **The Search pane was untestable for a reason that had nothing to do with testing.** Ask got twelve tests easily and Search got none, and the difference was not effort: `AskPane` had been written as a separate composable taking `UiState`, while Search stayed inline in `LoamScreen`, holding a ViewModel and a `Context`. Reaching its branches meant standing up a database and an embedder to produce states that are three fields of a data class. Extracting it — no behaviour change, a pure function of `UiState` — turned ten tests into fabricated state and a callback each, running in 18 s with no vault present. Testability here was a structural property, not a test-writing problem, and the tell was that one pane was easy and its neighbour was impossible.
 
