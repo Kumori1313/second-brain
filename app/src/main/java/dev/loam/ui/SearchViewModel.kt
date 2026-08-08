@@ -7,7 +7,6 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import androidx.work.WorkInfo
 import androidx.work.WorkManager
-import java.util.UUID
 import dev.loam.core.Loam
 import dev.loam.core.domain.AskQuestion
 import dev.loam.core.domain.SearchNotes
@@ -287,15 +286,8 @@ class SearchViewModel(app: Application) : AndroidViewModel(app) {
             .launchIn(viewModelScope)
     }
 
-    /**
-     * The work we have actually watched run, as opposed to a terminal state
-     * WorkManager replays to every new subscriber.
-     *
-     * Without this, each app launch sees the *previous* run's SUCCEEDED and
-     * treats it as fresh: it invalidates the index warm-up just finished
-     * loading, and reloads it for nothing.
-     */
-    private var runningWorkId: UUID? = null
+    /** Holds the "did we watch this start?" question. See [IndexWorkWatcher]. */
+    private val watcher = IndexWorkWatcher()
 
     /**
      * Both index passes, not only the one the user starts.
@@ -319,42 +311,13 @@ class SearchViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     private fun onIndexWork(manual: WorkInfo?, periodic: WorkInfo?) {
-        fun WorkInfo?.running() = this?.takeIf { it.state == WorkInfo.State.RUNNING }
-
-        val background = periodic.running()
-        val running = manual.running() ?: background
-        if (running != null) {
-            runningWorkId = running.id
-            _state.value = _state.value.copy(
-                indexing = true,
-                error = null,
-                indexStatus = describe(running, background = running === background),
-            )
-            return
-        }
-
-        // Nothing is running now. Only react to a stop we watched start —
-        // terminal states are replayed to every new subscriber, so the manual
-        // run that finished days ago arrives on launch looking exactly like one
-        // that just did, and reloading the index for it would throw away the
-        // warm-up that finished moments earlier.
-        val watched = runningWorkId ?: return
-        runningWorkId = null
-
-        val finished = listOfNotNull(manual, periodic).firstOrNull { it.id == watched }
-        if (finished?.outputData?.getBoolean(IndexWorker.KEY_SKIPPED, false) == true) {
-            // Nothing ran, so nothing changed — reporting "up to date" here
-            // would claim a guarantee this run never checked, and reloading the
-            // index would throw away a warm cache to no purpose.
-            _state.value = _state.value.copy(indexing = false, indexStatus = "Already indexing")
-            return
-        }
-
-        // What the pass actually did is reported by [observeLastRun], which
-        // reads the record the worker wrote. That is not indirection for its
-        // own sake: a periodic run has no output data to read, so the outcome
-        // has to come from somewhere both kinds of run can reach.
-        _state.value = _state.value.copy(indexing = false, indexStatus = null)
+        val decision = watcher.onChange(manual, periodic) ?: return
+        _state.value = _state.value.copy(
+            indexing = decision.indexing,
+            indexStatus = decision.status,
+            error = if (decision.clearError) null else _state.value.error,
+        )
+        if (!decision.reloadIndex) return
 
         // Vectors changed underneath the cache. Reload eagerly rather than
         // leaving the next search to pay for it — indexing is exactly when the
@@ -382,29 +345,6 @@ class SearchViewModel(app: Application) : AndroidViewModel(app) {
                 _state.value = _state.value.copy(lastRun = run, error = run?.error)
             }
             .launchIn(viewModelScope)
-    }
-
-    /**
-     * @param background prefixes the line, because the two runs are otherwise
-     *   indistinguishable on screen and the difference matters: one appeared on
-     *   its own and will finish on its own, the other is something the user is
-     *   waiting on.
-     */
-    private fun describe(info: WorkInfo, background: Boolean): String {
-        val stage = when (info.progress.getString(IndexWorker.KEY_STAGE)) {
-            IndexWorker.STAGE_WALKING ->
-                "Scanning vault… ${info.progress.getInt(IndexWorker.KEY_FILES_FOUND, 0)} notes found"
-
-            IndexWorker.STAGE_EMBEDDING -> {
-                val done = info.progress.getInt(IndexWorker.KEY_NOTES_DONE, 0)
-                val total = info.progress.getInt(IndexWorker.KEY_NOTES_TOTAL, 0)
-                val chunks = info.progress.getInt(IndexWorker.KEY_CHUNKS, 0)
-                "Embedding $done/$total notes ($chunks chunks)"
-            }
-
-            else -> "Starting…"
-        }
-        return if (background) "Background reindex · $stage" else stage
     }
 
     fun onVaultPicked(uri: Uri) {
