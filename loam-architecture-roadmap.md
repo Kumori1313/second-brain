@@ -424,10 +424,10 @@ Done:
 - ~~Exclude patterns and chunk size~~ — the reindex flow they were waiting for turned out to be two flows, because only one of them invalidates anything.
 - ~~Share-sheet integration~~ — and the text-selection menu, which is the half that actually changes how the app is used.
 - ~~Home-screen search widget~~ — a shortcut whose whole value is the focused field, and which took a second pass to look like one.
-- ~~Battery/thermal testing under a full-vault index~~ — a full rebuild costs ~1.7% of the battery. It also found a data-loss bug, which was worth more than the measurement.
+- ~~Battery/thermal testing under a full-vault index~~ — a full rebuild costs ~1.0% of the battery. It also found a data-loss bug, and then a wrong conclusion of its own; both below.
+- ~~App theming~~ — System / Light / Dark plus Material You. The plan below survived contact, with one correction: the launch window needed code, not just a resource qualifier.
 
 Remaining:
-- **Theming.** The app is hard light-only today: `MaterialTheme { }` with no scheme falls back to `lightColorScheme()` unconditionally, `Theme.Loam` inherits `android:Theme.Material.Light.NoActionBar`, and there is no `values-night`. So a phone in dark mode gets a white rectangle, preceded by a white launch flash before Compose composes. Follow the system, allow an explicit override, and offer dynamic color where the platform has it. Decisions below.
 - **Widget theming, independent of both.** The widget gets its own setting rather than inheriting: follow the system, follow the app, or a fixed light/dark. Decisions below.
 - **Exit criteria:** daily-driver comfortable — you reach for it instead of manual grep.
 
@@ -527,6 +527,20 @@ One deliberate limit: a single global widget setting rather than per-instance co
 
 **Done means screenshots in both themes.** This is the second visual feature, and the first one shipped working and wrong-looking past six passing tests — see below, and see the risks entry that came out of it. A green suite is not evidence about appearance.
 
+##### What survived contact — the app half, shipped
+
+Everything above held except the launch window, which needed more than the plan said.
+
+**`values-night` is not sufficient, and the reason generalises.** A resource qualifier resolves against the *system* configuration, so it paints the pre-Compose window correctly for `SYSTEM` and gets it exactly backwards for anyone running Light on a dark phone or the reverse — the two cases the override exists to serve. `MainActivity` now paints over it when the preference disagrees with the system, using flat Material baseline surfaces rather than the resolved scheme, because nothing resolvable exists that early and dynamic colour least of all. The general form: **an override that lives in app storage cannot be expressed as a resource qualifier**, and anything drawn before the app's own state is readable has to be handled separately.
+
+**One pure function, three consumers.** `ThemeMode.isDark(systemDark)` is trivial enough to look untestable, which is why it is worth isolating: the colour scheme, the status-bar icon appearance and the pre-Compose window background all have to agree, and three independent computations of "is it dark" is how two of them end up disagreeing on one device. Tested off-device in five lines.
+
+Two smaller things the implementation added. The stored theme falls back rather than throwing on an unrecognised value, because it is read before anything is on screen and a renamed enum constant would otherwise be a launch crash. And the store-only-deviations rule earns its keep differently here than it does for the measured constants: "System" is the absence of a choice, so writing it down would turn *I never touched this* into a preference no future default could reach.
+
+**Verified by looking**, as the entry above required: system dark, an explicit Light against a dark phone, static dark with Material You off, and the override surviving process death. The 91 instrumented tests confirm the wiring and can see none of it.
+
+One observation for whoever tunes this next: on a monochrome wallpaper, Material You produces a near-greyscale palette and the app loses all accent colour — correct behaviour, and considerably less legible than the static scheme. Worth knowing before treating dynamic colour as strictly better.
+
 #### Battery testing found a data-loss bug, which was worth more than the measurement
 
 **The battery answer is boring, which is the good outcome.** A full rebuild of the 392-note vault costs about **1.0% of the battery**. (First reported here as 1.7%, from a debug build — see below.)
@@ -539,7 +553,7 @@ One deliberate limit: a single global widget setting rather than per-instance co
 | Attributable to indexing | ~1,156 mA, so **~45 mAh** of a 4,492 mAh battery |
 | Battery temperature | 31.2 → 33.3 °C |
 
-Incremental passes are ~2 s and round to nothing. Only a first index or a chunk-size change costs anything worth naming, and 1.7% is not a reason to constrain either.
+Incremental passes are ~2 s and round to nothing. Only a first index or a chunk-size change costs anything worth naming, and 1.0% is not a reason to constrain either.
 
 **Thermal throttling is real and the framework never admits it.** `Thermal Status` stayed 0 for every run. Meanwhile per-chunk *inference* rose from 15.7–20.4 ms in the opening windows to 26–30 ms by the end — about 50% slower for identical work — and a second full rebuild started on an already-warm device came in 20% slower overall (287.0 s against 238.8 s) with `embed/chunk` up from 25.9 to 31.4 ms. The HAL's own `BIG`/`LITTLE` readings sat pinned at 86/85 °C for entire runs and are not live values. **The app's own per-window timings were the only honest thermometer here**, which is an argument for keeping that logging.
 
