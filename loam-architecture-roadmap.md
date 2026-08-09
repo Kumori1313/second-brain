@@ -422,9 +422,10 @@ Done:
 - ~~Tests for the index-work state machine~~ — thirteen, and the extraction that made them possible was the same move as the Search pane.
 - ~~Recalibrate `DEFAULT_MIN_SCORE`~~ — 0.35 → 0.44, plus the "show weak matches" reach that makes raising it safe. The measurement said something more useful than a number; see below.
 - ~~Exclude patterns and chunk size~~ — the reindex flow they were waiting for turned out to be two flows, because only one of them invalidates anything.
+- ~~Share-sheet integration~~ — and the text-selection menu, which is the half that actually changes how the app is used.
 
 Remaining:
-- Share-sheet integration; consider a home-screen search widget.
+- A home-screen search widget. The share sheet turned out to be the same need answered better, so this is now a convenience rather than the way in.
 - Battery/thermal testing under a full-vault first index, worth redoing now that it is not measuring two indexers at once — and now that a chunk-size change gives a repeatable way to trigger one on demand. The unexplained 46–52 ms/chunk below is the first thing to point it at.
 - **Exit criteria:** daily-driver comfortable — you reach for it instead of manual grep.
 
@@ -497,6 +498,18 @@ Worth naming for its shape rather than its content, because it is the same shape
 **The Search pane was untestable for a reason that had nothing to do with testing.** Ask got twelve tests easily and Search got none, and the difference was not effort: `AskPane` had been written as a separate composable taking `UiState`, while Search stayed inline in `LoamScreen`, holding a ViewModel and a `Context`. Reaching its branches meant standing up a database and an embedder to produce states that are three fields of a data class. Extracting it — no behaviour change, a pure function of `UiState` — turned ten tests into fabricated state and a callback each, running in 18 s with no vault present. Testability here was a structural property, not a test-writing problem, and the tell was that one pane was easy and its neighbour was impossible.
 
 Two things about the tests themselves. The `assertDoesNotExist` assertions — no Reindex button mid-index, no "No good matches" before a search, no stale counts under an error — are the ones that pass for free if a string is renamed, so each has a positive counterpart asserting the same text *is* present in the state where it belongs. That pairing is what makes an absence assertion mean anything, and it is cheap. And the query field cannot be found by its label or placeholder: both are sibling nodes rather than part of the editable field's semantics, so `performTextInput` finds nothing to type into. It is matched by `hasSetTextAction()`.
+
+#### The share sheet was the smaller half of "share-sheet integration"
+
+`ACTION_SEND` is the obvious one and `ACTION_PROCESS_TEXT` is the one that matters. It puts Loam in the text-selection menu, so highlighting a sentence anywhere on the device asks what you have already written about it — the premise of the app applied to text in front of you rather than text you retype. It was worth writing the item down as "share sheet" and then finding the better reading of it while implementing, which is an argument for keeping roadmap items about the *need* rather than the mechanism.
+
+`singleTask` is load-bearing rather than tidy-looking. Without it a share stacks a second `MainActivity` over the one already holding a warm index and an open model, each with its own ViewModel. With it, the share arrives at `onNewIntent` — which no recomposition observes — so the text is held as activity state and delivered through a `LaunchedEffect`, and a token in `UiState` forces the Search tab, since a share means "search this" regardless of which tab was left open.
+
+Shared text is flattened to one line and cut at 1,000 characters. The cut is honesty rather than defence: the embedder reads 256 tokens and stops, which is ~886 characters at this vault's measured density, so a forty-kilobyte article pasted into a one-line field would imply a search that never happened.
+
+Worth stating explicitly because it is the kind of thing that erodes quietly: **a shared query is a query.** Nothing arriving this way is stored, and the index stays derived from the vault and nothing else. The release APK's permission list is unchanged by the feature, and a test asserts no permission containing INTERNET or NETWORK exists rather than trusting that.
+
+Registration is tested by querying the installed package for handlers of each intent, not by reading the manifest source — the source is not what the system resolves against, and this project has already paid for an app APK packaged differently from the test APK that validated it.
 
 #### The two settings that needed a reindex flow needed two different ones
 

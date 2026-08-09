@@ -6,6 +6,8 @@ Ask *"did I ever write about setting up a virtual machine"* and get the right no
 
 Loam reads `.md` files in place through the Storage Access Framework, embeds them on-device, and searches by meaning rather than by string match. Nothing leaves the device, and nothing can: the app holds no network permission.
 
+Loam also sits in the share sheet and the text-selection menu, so you can highlight a sentence in any app and ask what you have already written about it.
+
 It is **not** a note editor and does not want to be. Your notes stay plain `.md` files wherever you already keep them; tapping a result opens the real file in whatever app you already use.
 
 Android · Kotlin · Jetpack Compose · MIT
