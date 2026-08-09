@@ -1,4 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">Loam</string>
+    <string name="widget_search_hint">Search your notes</string>
+    <string name="widget_description">Open Loam with the search field ready.</string>
 </resources>

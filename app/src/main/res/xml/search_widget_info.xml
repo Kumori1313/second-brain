@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    updatePeriodMillis is 0 on purpose. The widget holds no data — no note
+    count, no recent results — so there is nothing to refresh, and a periodic
+    update would wake the app to redraw a constant. Holding no data also keeps
+    it clear of the encrypted index, which cannot be read at all when index
+    protection is set to require authentication.
+-->
+<appwidget-provider xmlns:android="http://schemas.android.com/apk/res/android"
+    android:description="@string/widget_description"
+    android:initialLayout="@layout/widget_search"
+    android:minWidth="180dp"
+    android:minHeight="40dp"
+    android:previewLayout="@layout/widget_search"
+    android:resizeMode="horizontal"
+    android:targetCellWidth="3"
+    android:targetCellHeight="1"
+    android:updatePeriodMillis="0"
+    android:widgetCategory="home_screen" />

@@ -34,9 +34,13 @@ class MainActivity : FragmentActivity() {
      */
     private var shared by mutableStateOf<String?>(null)
 
+    /** Set when the home-screen widget launched us. See [dev.loam.widget.SearchWidget]. */
+    private var focusSearch by mutableStateOf(false)
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         shared = SharedQuery.from(intent)
+        focusSearch = intent.getBooleanExtra(EXTRA_FOCUS_SEARCH, false)
         enableEdgeToEdge()
         setContent {
             MaterialTheme {
@@ -63,6 +67,10 @@ class MainActivity : FragmentActivity() {
                         shared?.let { model.onSharedQuery(it) }
                         shared = null
                     }
+                    LaunchedEffect(focusSearch) {
+                        if (focusSearch) model.onFocusSearch()
+                        focusSearch = false
+                    }
                     LoamScreen(viewModel = model)
                 }
             }
@@ -77,5 +85,11 @@ class MainActivity : FragmentActivity() {
         super.onNewIntent(intent)
         setIntent(intent)
         SharedQuery.from(intent)?.let { shared = it }
+        if (intent.getBooleanExtra(EXTRA_FOCUS_SEARCH, false)) focusSearch = true
+    }
+
+    companion object {
+        /** Widget → "open Search with the field ready", not merely "open". */
+        const val EXTRA_FOCUS_SEARCH = "dev.loam.FOCUS_SEARCH"
     }
 }

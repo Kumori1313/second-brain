@@ -67,6 +67,11 @@ class SearchViewModel(app: Application) : AndroidViewModel(app) {
          * another tab — the case `singleTask` exists to create.
          */
         val shareToken: Int = 0,
+        /**
+         * Bumped when something outside the app asks for the search field
+         * itself — currently only the home-screen widget.
+         */
+        val focusToken: Int = 0,
     )
 
     /**
@@ -414,6 +419,14 @@ class SearchViewModel(app: Application) : AndroidViewModel(app) {
         )
         searchJob?.cancel()
         searchJob = viewModelScope.launch { search(text) }
+    }
+
+    /**
+     * Opens on Search with the field focused, which is the whole difference
+     * between the widget and the launcher icon.
+     */
+    fun onFocusSearch() {
+        _state.value = _state.value.copy(focusToken = _state.value.focusToken + 1)
     }
 
     fun onQueryChange(query: String) {

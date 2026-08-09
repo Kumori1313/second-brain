@@ -2,6 +2,8 @@ package dev.loam.ui
 
 import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.assertIsFocused
+import androidx.compose.ui.test.assertIsNotFocused
 import androidx.compose.ui.test.hasSetTextAction
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onAllNodesWithText
@@ -215,6 +217,23 @@ class SearchPaneTest {
         compose.onNodeWithText("Second").performClick()
 
         assertEquals(2L, opened?.chunkId)
+    }
+
+    @Test
+    fun theWidgetsFocusRequestReachesTheField() {
+        // The widget's entire value over the launcher icon. A FocusRequester
+        // that is never attached to a node throws at request time, which
+        // compiles perfectly and fails only on a device.
+        show(SearchViewModel.UiState(hasVault = true, focusToken = 1))
+
+        compose.onNode(hasSetTextAction()).assertIsFocused()
+    }
+
+    @Test
+    fun theFieldIsNotFocusedWithoutOneBeingAsked() {
+        show(SearchViewModel.UiState(hasVault = true))
+
+        compose.onNode(hasSetTextAction()).assertIsNotFocused()
     }
 
     @Test

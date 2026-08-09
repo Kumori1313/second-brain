@@ -47,6 +47,9 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
@@ -78,6 +81,12 @@ fun LoamScreen(viewModel: SearchViewModel) {
     // twice is still a request to look at the results.
     LaunchedEffect(state.shareToken) {
         if (state.shareToken > 0) tab = TAB_SEARCH
+    }
+
+    // Same for the widget: it asks for the search field specifically, so
+    // landing on Ask or Settings would make it a slower app icon.
+    LaunchedEffect(state.focusToken) {
+        if (state.focusToken > 0) tab = TAB_SEARCH
     }
 
     if (showOpenWith) {
@@ -213,12 +222,25 @@ fun SearchPane(
             .fillMaxSize()
             .imePadding()
     ) {
+        val focus = remember { FocusRequester() }
+        val keyboard = LocalSoftwareKeyboardController.current
+        LaunchedEffect(state.focusToken) {
+            if (state.focusToken == 0) return@LaunchedEffect
+            // Focus alone is not enough on every device — requesting focus
+            // programmatically does not reliably raise the IME the way a tap
+            // does, and a widget that opens a field you still have to tap is
+            // the shortcut not working.
+            focus.requestFocus()
+            keyboard?.show()
+        }
+
         OutlinedTextField(
             value = state.query,
             onValueChange = onQueryChange,
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(top = 8.dp),
+                .padding(top = 8.dp)
+                .focusRequester(focus),
             label = { Text("Search your notes") },
             placeholder = { Text("did I ever write about…") },
             singleLine = true,
