@@ -424,9 +424,10 @@ Done:
 - ~~Exclude patterns and chunk size~~ — the reindex flow they were waiting for turned out to be two flows, because only one of them invalidates anything.
 - ~~Share-sheet integration~~ — and the text-selection menu, which is the half that actually changes how the app is used.
 - ~~Home-screen search widget~~ — a shortcut whose whole value is the focused field, and which took a second pass to look like one.
+- ~~Battery/thermal testing under a full-vault index~~ — a full rebuild costs ~1.7% of the battery. It also found a data-loss bug, which was worth more than the measurement.
 
 Remaining:
-- Battery/thermal testing under a full-vault first index, worth redoing now that it is not measuring two indexers at once — and now that a chunk-size change gives a repeatable way to trigger one on demand. The unexplained 46–52 ms/chunk below is the first thing to point it at.
+- Profile `Chunker`. Battery testing localised the unexplained slowdown to it: 83.5 s and 98.0 s across two full rebuilds, against the 4.0 s on file, at ~213 ms/note. Reproducible, and the largest single cost in indexing after embedding.
 - **Exit criteria:** daily-driver comfortable — you reach for it instead of manual grep.
 
 Struck from this list: *paginated/streamed indexing so a large vault doesn't freeze the UI on first run*. Indexing runs in WorkManager with per-stage progress and never blocked the UI. The related worry about the vector index living in heap was also misplaced — measured at 8 MB for 5,297 chunks and 77 MB at 50k. The actual memory problem was somewhere else entirely; see below.
@@ -499,6 +500,45 @@ Worth naming for its shape rather than its content, because it is the same shape
 
 Two things about the tests themselves. The `assertDoesNotExist` assertions — no Reindex button mid-index, no "No good matches" before a search, no stale counts under an error — are the ones that pass for free if a string is renamed, so each has a positive counterpart asserting the same text *is* present in the state where it belongs. That pairing is what makes an absence assertion mean anything, and it is cheap. And the query field cannot be found by its label or placeholder: both are sibling nodes rather than part of the editable field's semantics, so `performTextInput` finds nothing to type into. It is matched by `hasSetTextAction()`.
 
+#### Battery testing found a data-loss bug, which was worth more than the measurement
+
+**The battery answer is boring, which is the good outcome.** A full rebuild of the 392-note vault costs about **1.7% of the battery**.
+
+| | |
+| --- | --- |
+| Full rebuild | 5,297 chunks, 238.8 s, screen on, unplugged |
+| Charge consumed | 94 mAh (2,152 → 2,058 mAh) |
+| Idle screen-on baseline | ~240 mA |
+| Attributable to indexing | ~1,176 mA, so **~78 mAh** of a 4,492 mAh battery |
+| Battery temperature | 31.2 → 33.3 °C |
+
+Incremental passes are ~2 s and round to nothing. Only a first index or a chunk-size change costs anything worth naming, and 1.7% is not a reason to constrain either.
+
+**Thermal throttling is real and the framework never admits it.** `Thermal Status` stayed 0 for every run. Meanwhile per-chunk *inference* rose from 15.7–20.4 ms in the opening windows to 26–30 ms by the end — about 50% slower for identical work — and a second full rebuild started on an already-warm device came in 20% slower overall (287.0 s against 238.8 s) with `embed/chunk` up from 25.9 to 31.4 ms. The HAL's own `BIG`/`LITTLE` readings sat pinned at 86/85 °C for entire runs and are not live values. **The app's own per-window timings were the only honest thermometer here**, which is an argument for keeping that logging.
+
+**The unexplained 2x is chunking, and none of the guesses was right.** Against the 151 s run recorded above:
+
+| stage | on file | measured | Δ |
+| --- | --- | --- | --- |
+| chunk | 4.0 s | **83.5 s** | +79.5 s |
+| embed | 128 s | 137.4 s | +9.4 s |
+| read | 11.3 s | 8.1 s | −3.2 s |
+| store | 4.8 s | 6.6 s | +1.8 s |
+| walk | 1.5 s | 1.6 s | — |
+| total | 151 s | 238.8 s | +87.8 s |
+
+Chunking is 91% of the gap and reproduced at 98.0 s on the second rebuild — 35% of the run in both, against 2.6% on file. Embedding is +7% and `embed/chunk` is 25.9 ms against 24.1, which is ordinary variance. So thermal, screen-on and foreground contention — the three things guessed when the discrepancy was first recorded — were all wrong, and the answer was a stage nobody suspected because it had been measured at 4 s and never re-checked. **A stage that was cheap once gets assumed cheap forever; nothing re-measures it until something else forces the question.** Neither run comes near 151 s, so that figure should not be trusted as a baseline again without a fresh measurement behind it.
+
+**And the part that mattered.** A periodic rebuild wiped all 392 notes, embedded 85, and was stopped when the screen went off. The vault sat 78% unindexed, the UI reported "85 notes" as though that were the whole of it, and search silently missed most of the corpus. Three faults had to line up:
+
+1. The rebuild cleared the table before re-embedding. At minutes per pass on a phone that dozes, the window in which the index does not exist is a window that gets hit — routinely, not exceptionally.
+2. `CancellationException` was caught by the general `catch (e: Exception)` and recorded as a failed run reading "Job was cancelled", which the UI then showed as an index error. Being stopped is not failing.
+3. `Result.failure()` is terminal, so the interrupted pass was never retried. Each fresh attempt would wipe and restart from zero, so a rebuild too long to fit one job window could never converge.
+
+Notes are now replaced one at a time and nothing is cleared up front, so the index stays complete throughout and the worst an interruption leaves is a mix of two chunk shapes — a quality difference rather than an absence. Verified by reproducing it: killing the app 50 notes into a rebuild leaves 392 notes and 5,368 chunks, and WorkManager restarts the pass on its own.
+
+The transferable part is not "handle cancellation". It is that **the fingerprint-on-success design was reasoned about carefully and still lost the data.** The reasoning went: write the marker only when the pass completes, so an interrupted rebuild is retried rather than banked half-done — which is correct, and is what the commit message argued. The question never asked was what the index looks like *while* that retry is pending. Designing the recovery path is not the same as looking at the state you recover from.
+
 #### The widget that worked and looked wrong
 
 A shortcut shaped like a search field. What it buys over the launcher icon is the focused field — Search open, keyboard already up — so the focus plumbing is the feature and the widget is only the trigger.
@@ -545,7 +585,7 @@ Both are staged behind a single Apply that says what it costs, because applying 
 
 Verified against the real vault rather than a fixture: `AE *.md` took it from 392 notes to 389, and the notes it removed — which had turned up in the relevance-floor probe output earlier the same session — were gone from the index entirely. Clearing it brought back exactly 3 notes and 252 chunks, and 5,045 + 252 is 5,297, the count it started at.
 
-One measurement left unexplained rather than explained away: that full rebuild ran at 46–52 ms/chunk against the 24.1 ms/chunk this document records for the original full index, 285 s against 151 s. Screen-on, thermal state after a long test session, and foreground contention are all plausible and none of them was isolated. Recorded as an open discrepancy, since the alternative is exactly the confident just-so story this project keeps having to retract.
+One measurement left unexplained rather than explained away: that full rebuild ran at 46–52 ms/chunk against the 24.1 ms/chunk this document records for the original full index, 285 s against 151 s. Screen-on, thermal state after a long test session, and foreground contention are all plausible and none of them was isolated. Recorded as an open discrepancy, since the alternative is exactly the confident just-so story this project keeps having to retract. (Closed below: it is chunking, and none of the three guesses was right.)
 
 #### The relevance floor cannot separate relevant from irrelevant, and now says so
 
@@ -595,6 +635,7 @@ Those tests are built from real `WorkInfo` values rather than an interface of ou
 - **Small-model hallucination survives RAG.** Grounding reduces it, doesn't eliminate it — the "sources used" panel is doing real work here, not decoration.
 - **SAF has no true background filesystem watch.** Periodic + manual reindex is the honest architecture, not a stopgap.
 - **First index of a large, long-lived vault will be slow and battery-heavy.** Needs a visible progress state; shouldn't run silently in the background on first launch.
+- **A destructive step inside a long operation is a window that will be hit.** A rebuild cleared the index before refilling it, which is safe only if the pass always finishes. On a phone, a four-minute pass routinely does not — the screen goes off and the system takes the CPU back. The correct question about any such step is not "will this be interrupted?" but "what does a user see if it is?"
 - **Nothing here looks at the app.** Every technique this document accumulates checks that something is correct — a measurement, an assertion, a mutation. None of them can see that a working widget is shaped like a box instead of a field, which is how that shipped past six passing tests and was caught by the user in one glance. Where something has a visual affordance, "the tests pass" and "it looks like what it is" are separate claims.
 - **A new field's absent state is a claim about history.** Twice now: a setting stored equal to its default froze that default forever, and an absent chunking fingerprint read as "unknown" would have rebuilt every existing index to reach the shape it already had. Both times the honest reading was available — nobody expressed a preference; chunking could only have been the default — and both times reading it as ignorance was a decision made by not making one.
 - **Testing states is not testing transitions.** Index protection was verified at each of its three levels and shipped; it destroyed a real index on the *change* between two of them, which no test touched. The same shape as the entry below — the thing exercised was adjacent to the thing that mattered.
