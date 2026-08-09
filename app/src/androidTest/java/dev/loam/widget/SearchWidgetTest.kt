@@ -100,6 +100,28 @@ class SearchWidgetTest {
     }
 
     @Test
+    fun thePillDoesNotGrowWithTheCellItIsGiven() {
+        val views = RemoteViews(context.packageName, R.layout.widget_search)
+        val root = views.apply(context, FrameLayout(context))
+
+        // A launcher cell can be much taller than the pill wants to be. The
+        // first version was match_parent and filled it, which read as a box
+        // rather than a field — the shape is the whole affordance.
+        val tall = (400 * context.resources.displayMetrics.density).toInt()
+        val wide = (300 * context.resources.displayMetrics.density).toInt()
+        root.measure(
+            View.MeasureSpec.makeMeasureSpec(wide, View.MeasureSpec.EXACTLY),
+            View.MeasureSpec.makeMeasureSpec(tall, View.MeasureSpec.EXACTLY),
+        )
+        root.layout(0, 0, root.measuredWidth, root.measuredHeight)
+
+        val pill = root.findViewById<View>(R.id.widget_root)
+        val expected = (48 * context.resources.displayMetrics.density).toInt()
+        assertEquals("pill height", expected, pill.height)
+        assertEquals("pill should still span the cell's width", wide, pill.width)
+    }
+
+    @Test
     fun itDescribesItselfInThePicker() {
         val widget = info()!!
         val description = widget.loadDescription(context)?.toString()

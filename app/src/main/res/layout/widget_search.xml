@@ -4,31 +4,43 @@
     text field anyway, so this is a shortcut that looks like one, and a
     shortcut does not justify a new dependency in a project that has to
     account for every one of them at F-Droid review.
+
+    The outer frame is transparent and takes whatever cell the launcher hands
+    out; the pill inside has a fixed height and sits centred in it. Letting the
+    pill itself be match_parent instead makes it as tall as the cell, which is
+    what a search widget must not look like — the shape is the affordance, and
+    a tall box does not read as a field.
 -->
-<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
-    android:id="@+id/widget_root"
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent"
-    android:layout_height="match_parent"
-    android:background="@drawable/widget_background"
-    android:gravity="center_vertical"
-    android:orientation="horizontal"
-    android:paddingStart="16dp"
-    android:paddingEnd="16dp">
+    android:layout_height="match_parent">
 
-    <ImageView
-        android:layout_width="24dp"
-        android:layout_height="24dp"
-        android:contentDescription="@string/widget_search_hint"
-        android:src="@drawable/ic_widget_search" />
+    <LinearLayout
+        android:id="@+id/widget_root"
+        android:layout_width="match_parent"
+        android:layout_height="48dp"
+        android:layout_gravity="center_vertical"
+        android:background="@drawable/widget_background"
+        android:gravity="center_vertical"
+        android:orientation="horizontal"
+        android:paddingStart="16dp"
+        android:paddingEnd="16dp">
 
-    <TextView
-        android:layout_width="0dp"
-        android:layout_height="wrap_content"
-        android:layout_marginStart="12dp"
-        android:layout_weight="1"
-        android:ellipsize="end"
-        android:maxLines="1"
-        android:text="@string/widget_search_hint"
-        android:textColor="?android:attr/textColorSecondary"
-        android:textSize="16sp" />
-</LinearLayout>
+        <ImageView
+            android:layout_width="20dp"
+            android:layout_height="20dp"
+            android:contentDescription="@string/widget_search_hint"
+            android:src="@drawable/ic_widget_search" />
+
+        <TextView
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="12dp"
+            android:layout_weight="1"
+            android:ellipsize="end"
+            android:maxLines="1"
+            android:text="@string/widget_search_hint"
+            android:textColor="?android:attr/textColorSecondary"
+            android:textSize="15sp" />
+    </LinearLayout>
+</FrameLayout>
