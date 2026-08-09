@@ -8,6 +8,7 @@ import androidx.lifecycle.viewModelScope
 import androidx.work.WorkInfo
 import androidx.work.WorkManager
 import dev.loam.core.Loam
+import dev.loam.core.domain.Appearance
 import dev.loam.core.domain.AskQuestion
 import dev.loam.core.domain.SearchNotes
 import dev.loam.core.domain.IndexingRules
@@ -46,6 +47,7 @@ class SearchViewModel(app: Application) : AndroidViewModel(app) {
         val model: ModelState = ModelState.None,
         val ask: AskState = AskState(),
         val tuning: Tuning = Tuning(),
+        val appearance: Appearance = Appearance(),
         val rules: IndexingRules = IndexingRules(),
         /** Last path segment of the vault URI — enough to recognise it. */
         val vaultName: String? = null,
@@ -123,6 +125,7 @@ class SearchViewModel(app: Application) : AndroidViewModel(app) {
             hasVault = loam.vaultLocation.treeUri != null,
             modelName = loam.modelLocation.displayName,
             tuning = loam.settings.tuning,
+            appearance = loam.settings.appearance,
             rules = loam.settings.indexing,
             vaultName = loam.vaultLocation.treeUri?.lastPathSegment,
             keyProtection = loam.settings.keyProtection,
@@ -207,9 +210,19 @@ class SearchViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    /**
+     * A preference, so it applies immediately rather than being staged — there
+     * is nothing to rebuild and nothing it can cost.
+     */
+    fun onAppearanceChange(appearance: Appearance) {
+        loam.settings.appearance = appearance
+        _state.value = _state.value.copy(appearance = loam.settings.appearance)
+    }
+
     fun onResetTuning() {
         onTuningChange(Tuning())
         onIndexingRulesChange(IndexingRules())
+        onAppearanceChange(Appearance())
     }
 
     /**

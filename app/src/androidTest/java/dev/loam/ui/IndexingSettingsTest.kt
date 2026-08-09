@@ -3,7 +3,11 @@ package dev.loam.ui
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertIsEnabled
 import androidx.compose.ui.test.assertIsNotEnabled
+import androidx.compose.ui.test.assertIsNotSelected
+import androidx.compose.ui.test.assertIsSelected
 import androidx.compose.ui.test.hasSetTextAction
+import androidx.compose.ui.test.hasText
+import androidx.compose.ui.test.isSelectable
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
@@ -12,7 +16,9 @@ import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.performSemanticsAction
 import androidx.compose.ui.test.performTextInput
 import androidx.compose.ui.semantics.SemanticsActions
+import dev.loam.core.domain.Appearance
 import dev.loam.core.domain.IndexingRules
+import dev.loam.core.domain.ThemeMode
 import dev.loam.core.domain.Tuning
 import dev.loam.core.store.KeyProtection
 import org.junit.Assert.assertEquals
@@ -38,6 +44,8 @@ class IndexingSettingsTest {
         indexing: Boolean = false,
         noteCount: Int = 392,
         onRulesChange: (IndexingRules) -> Unit = {},
+        appearance: Appearance = Appearance(),
+        onAppearanceChange: (Appearance) -> Unit = {},
     ) {
         compose.setContent {
             SettingsPane(
@@ -52,6 +60,8 @@ class IndexingSettingsTest {
                 onResetTuning = {},
                 rules = rules,
                 onRulesChange = onRulesChange,
+                appearance = appearance,
+                onAppearanceChange = onAppearanceChange,
                 onPickVault = {},
                 onPickModel = {},
                 onReindex = {},
@@ -65,6 +75,29 @@ class IndexingSettingsTest {
         compose.onNodeWithTag(CHUNK_SIZE_SLIDER)
             .performScrollTo()
             .performSemanticsAction(SemanticsActions.SetProgress) { it(tokens) }
+    }
+
+    @Test
+    fun pickingAThemeAppliesImmediately() {
+        var applied: Appearance? = null
+        show(onAppearanceChange = { applied = it })
+
+        compose.onNodeWithText("Dark").performScrollTo().performClick()
+
+        // Unlike the indexing settings below it, a theme costs nothing to
+        // apply, so staging it behind a button would only be in the way.
+        assertEquals(ThemeMode.DARK, applied?.mode)
+    }
+
+    @Test
+    fun theThemeInEffectIsTheSelectedChip() {
+        show(appearance = Appearance(mode = ThemeMode.LIGHT))
+
+        // "Light" appears twice — as the current value and as a chip — so
+        // matching on text alone would pass while the chips showed the wrong
+        // one selected. Selection is the thing that has to be right.
+        compose.onNode(hasText("Light") and isSelectable()).performScrollTo().assertIsSelected()
+        compose.onNode(hasText("Dark") and isSelectable()).assertIsNotSelected()
     }
 
     @Test

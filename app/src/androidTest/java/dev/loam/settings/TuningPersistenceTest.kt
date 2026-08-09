@@ -2,8 +2,10 @@ package dev.loam.settings
 
 import android.content.Context
 import androidx.test.platform.app.InstrumentationRegistry
+import dev.loam.core.domain.Appearance
 import dev.loam.core.domain.IndexingRules
 import dev.loam.core.domain.Settings
+import dev.loam.core.domain.ThemeMode
 import dev.loam.core.domain.Tuning
 import org.junit.After
 import org.junit.Assert.assertEquals
@@ -133,6 +135,38 @@ class TuningPersistenceTest {
         // gap between the two is the signal IndexVault acts on.
         assertEquals("v1:240", settings().indexedChunking)
         assertEquals("v1:200", settings().indexing.chunkingFingerprint())
+    }
+
+    @Test
+    fun aChosenThemeSurvivesAndSystemIsNotStored() {
+        settings().appearance = Appearance(mode = ThemeMode.DARK)
+        assertEquals(ThemeMode.DARK, settings().appearance.mode)
+        assertTrue(prefs.contains("theme_mode"))
+
+        settings().appearance = Appearance(mode = ThemeMode.SYSTEM)
+
+        // "System" is the absence of a choice, not a choice.
+        assertFalse(prefs.contains("theme_mode"))
+        assertEquals(ThemeMode.SYSTEM, settings().appearance.mode)
+    }
+
+    @Test
+    fun turningOffMaterialYouIsTheDeviation() {
+        settings().appearance = Appearance(dynamicColor = false)
+        assertTrue(prefs.contains("dynamic_color"))
+        assertFalse(settings().appearance.dynamicColor)
+
+        settings().appearance = Appearance(dynamicColor = true)
+        assertFalse(prefs.contains("dynamic_color"))
+    }
+
+    @Test
+    fun anUnknownStoredThemeFallsBackRatherThanCrashing() {
+        prefs.edit().putString("theme_mode", "SEPIA").commit()
+
+        // A renamed or removed enum constant must not take the app down on
+        // launch — this is read before anything is on screen.
+        assertEquals(ThemeMode.SYSTEM, settings().appearance.mode)
     }
 
     @Test

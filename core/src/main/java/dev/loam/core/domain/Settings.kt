@@ -163,6 +163,32 @@ class Settings(private val context: Context) {
                 .apply()
         }
 
+    /**
+     * Same store-only-deviations rule as [tuning].
+     *
+     * It earns its keep differently here: a theme left on "System" is not a
+     * choice, and writing it down would turn "I never touched this" into a
+     * preference that a later default could not reach.
+     */
+    var appearance: Appearance
+        get() = Appearance(
+            mode = prefs.getString(KEY_THEME_MODE, null)
+                ?.let { name -> ThemeMode.entries.firstOrNull { it.name == name } }
+                ?: ThemeMode.SYSTEM,
+            dynamicColor = prefs.getBoolean(KEY_DYNAMIC_COLOR, true),
+        )
+        set(value) {
+            prefs.edit()
+                .apply {
+                    if (value.mode == ThemeMode.SYSTEM) remove(KEY_THEME_MODE)
+                    else putString(KEY_THEME_MODE, value.mode.name)
+
+                    if (value.dynamicColor) remove(KEY_DYNAMIC_COLOR)
+                    else putBoolean(KEY_DYNAMIC_COLOR, false)
+                }
+                .apply()
+        }
+
     /** Same store-only-deviations rule as [tuning]; same reason. */
     var indexing: IndexingRules
         get() = IndexingRules(
@@ -209,5 +235,7 @@ class Settings(private val context: Context) {
         const val KEY_EXCLUDES = "exclude_patterns"
         const val KEY_CHUNK_TOKENS = "chunk_tokens"
         const val KEY_INDEXED_CHUNKING = "indexed_chunking"
+        const val KEY_THEME_MODE = "theme_mode"
+        const val KEY_DYNAMIC_COLOR = "dynamic_color"
     }
 }

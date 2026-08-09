@@ -143,6 +143,8 @@ fun LoamScreen(viewModel: SearchViewModel) {
                     onResetTuning = viewModel::onResetTuning,
                     rules = state.rules,
                     onRulesChange = viewModel::onIndexingRulesChange,
+                    appearance = state.appearance,
+                    onAppearanceChange = viewModel::onAppearanceChange,
                     onPickVault = { pickVault.launch(null) },
                     onPickModel = onPickModel,
                     onReindex = viewModel::reindex,

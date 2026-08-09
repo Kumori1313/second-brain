@@ -19,6 +19,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Slider
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -33,7 +34,10 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import android.os.Build
+import dev.loam.core.domain.Appearance
 import dev.loam.core.domain.IndexingRules
+import dev.loam.core.domain.ThemeMode
 import dev.loam.core.domain.Tuning
 import dev.loam.core.store.KeyProtection
 import kotlin.math.roundToInt
@@ -61,6 +65,8 @@ fun SettingsPane(
     onResetTuning: () -> Unit,
     rules: IndexingRules,
     onRulesChange: (IndexingRules) -> Unit,
+    appearance: Appearance,
+    onAppearanceChange: (Appearance) -> Unit,
     onPickVault: () -> Unit,
     onPickModel: () -> Unit,
     onReindex: () -> Unit,
@@ -172,6 +178,53 @@ fun SettingsPane(
                 onValueChange = { onTuningChange(tuning.copy(relevanceFloor = it)) },
                 valueRange = Tuning.FLOOR_RANGE,
             )
+        }
+
+        HorizontalDivider(Modifier.padding(vertical = 8.dp))
+
+        SectionTitle("Appearance")
+        Tunable(
+            label = "Theme",
+            value = appearance.mode.label,
+            detail = "Follows your phone unless you say otherwise.",
+        ) {
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                for (mode in ThemeMode.entries) {
+                    FilterChip(
+                        selected = appearance.mode == mode,
+                        onClick = { onAppearanceChange(appearance.copy(mode = mode)) },
+                        label = { Text(mode.label) },
+                    )
+                }
+            }
+        }
+
+        // Hidden rather than disabled below API 31: a toggle that cannot do
+        // anything is worse than no toggle, and there is nothing the user
+        // could do about it.
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(top = 12.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween,
+            ) {
+                Column(Modifier.weight(1f)) {
+                    Text("Material You", style = MaterialTheme.typography.bodyLarge)
+                    Text(
+                        "Take accent colours from your wallpaper. Read from the " +
+                            "platform, not from anything Google-distributed.",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                Spacer(Modifier.width(12.dp))
+                Switch(
+                    checked = appearance.dynamicColor,
+                    onCheckedChange = { onAppearanceChange(appearance.copy(dynamicColor = it)) },
+                )
+            }
         }
 
         HorizontalDivider(Modifier.padding(vertical = 8.dp))

@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    The window Android paints before Compose has drawn anything. Without this,
+    launching into a dark-mode phone flashes white for a frame or two.
+
+    Only follows the *system*, since resource qualifiers cannot see an app
+    preference — MainActivity paints over it when the user has overridden the
+    system. See LoamTheme.
+-->
+<resources>
+    <style name="Theme.Loam" parent="android:Theme.Material.NoActionBar" />
+</resources>
