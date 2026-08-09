@@ -61,6 +61,12 @@ class SearchViewModel(app: Application) : AndroidViewModel(app) {
          * value of the floor is that what clears it means something.
          */
         val weakMatches: Boolean = false,
+        /**
+         * Bumped each time text arrives from another app. The UI watches it to
+         * switch to Search, which matters only when Loam was already open on
+         * another tab — the case `singleTask` exists to create.
+         */
+        val shareToken: Int = 0,
     )
 
     /**
@@ -392,6 +398,22 @@ class SearchViewModel(app: Application) : AndroidViewModel(app) {
 
     fun reindex() {
         IndexWorker.runNow(getApplication())
+    }
+
+    /**
+     * A query handed over whole by another app, rather than typed.
+     *
+     * Not debounced, unlike [onQueryChange]: there are no further keystrokes
+     * coming, so waiting 250 ms would only make the share feel slow.
+     */
+    fun onSharedQuery(text: String) {
+        _state.value = _state.value.copy(
+            query = text,
+            weakMatches = false,
+            shareToken = _state.value.shareToken + 1,
+        )
+        searchJob?.cancel()
+        searchJob = viewModelScope.launch { search(text) }
     }
 
     fun onQueryChange(query: String) {

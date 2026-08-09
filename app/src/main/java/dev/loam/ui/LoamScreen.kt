@@ -39,6 +39,7 @@ import androidx.compose.material3.TabRow
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -71,6 +72,13 @@ fun LoamScreen(viewModel: SearchViewModel) {
     val opener = remember { NoteOpener(context) }
     var showOpenWith by remember { mutableStateOf(false) }
     var tab by remember { mutableIntStateOf(TAB_SEARCH) }
+
+    // A share means "search this", so it has to win over whatever tab was left
+    // open. Keyed on the token rather than the query: sharing the same text
+    // twice is still a request to look at the results.
+    LaunchedEffect(state.shareToken) {
+        if (state.shareToken > 0) tab = TAB_SEARCH
+    }
 
     if (showOpenWith) {
         OpenWithDialog(
