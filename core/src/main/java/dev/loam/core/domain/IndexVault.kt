@@ -132,6 +132,18 @@ class IndexVault(
         // Nothing about a note's (mtime, size) says so, which is exactly why
         // this is checked here rather than left to the incremental sweep: the
         // fingerprints all still match and not one note would be revisited.
+        //
+        // Handled by re-embedding every note rather than by clearing the table
+        // first. Clearing was the original design and it is destructive in a
+        // way that only shows up when a pass is interrupted — which, at minutes
+        // per pass on a phone that dozes, is routine rather than exceptional.
+        // Observed: a periodic rebuild wiped 392 notes, embedded 85, and was
+        // stopped. The vault was left 78% unindexed with the UI reporting
+        // "85 notes" as though that were the whole of it, and search silently
+        // missing most of the corpus. Replacing note by note keeps the index
+        // complete throughout; the worst an interruption leaves behind is a mix
+        // of two chunk shapes, which is a quality difference rather than an
+        // absence.
         val chunking = rules.chunkingFingerprint()
         // An absent record means "built before chunking was configurable", not
         // "unknown" — back then it was always the compiled-in default. Treating
@@ -140,25 +152,20 @@ class IndexVault(
         // is 285 s of re-embedding for no change.
         val indexed = settings.indexedChunking ?: IndexingRules().chunkingFingerprint()
         val rebuild = indexed != chunking
-        if (rebuild) {
-            Log.i(TAG, "chunking changed to $chunking — rebuilding")
-            dao.clearAll()
-        }
+        if (rebuild) Log.i(TAG, "chunking changed to $chunking — rebuilding")
 
         val walkStart = System.nanoTime()
         val found = reader.walk(treeUri, exclude) { onProgress(Progress.Walking(it)) }
         t.walkMs = (System.nanoTime() - walkStart) / 1_000_000
 
         // Fingerprint by (mtime, size) — see NoteEntity for why not a hash.
-        // Read after any rebuild wipe, or the pass would think it already had
-        // everything it just deleted.
         val known = dao.allNotes().associateBy { it.uri }
         val foundUris = found.mapTo(HashSet()) { it.uri.toString() }
 
         val stale = known.keys.filterNot { it in foundUris }
         if (stale.isNotEmpty()) dao.deleteNotesByUri(stale)
 
-        val changed = found.filter { note ->
+        val changed = if (rebuild) found else found.filter { note ->
             val prior = known[note.uri.toString()]
             prior == null ||
                 prior.lastModified != note.lastModified ||

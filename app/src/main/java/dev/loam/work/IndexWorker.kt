@@ -13,6 +13,7 @@ import androidx.work.workDataOf
 import dev.loam.core.Loam
 import dev.loam.core.domain.IndexVault
 import java.util.concurrent.TimeUnit
+import kotlin.coroutines.cancellation.CancellationException
 
 /**
  * Runs indexing off the UI, and keeps running if the user leaves the app.
@@ -48,6 +49,17 @@ class IndexWorker(
             } ?: return Result.success(workDataOf(KEY_SKIPPED to true))
             loam.searchNotes.invalidate()
             finish(log, notes = done.notesIndexed, chunks = done.chunksEmbedded, millis = done.millis)
+        } catch (e: CancellationException) {
+            // Being stopped is not failing. WorkManager cancels a worker
+            // routinely — the screen goes off, the device dozes, the system
+            // wants the CPU back — and a full pass takes minutes, so it happens.
+            //
+            // Caught by the clause below it once, which recorded a failed run
+            // with the message "Job was cancelled", showed that to the user as
+            // an index error, and returned Result.failure(). Failure is
+            // terminal: the pass that got interrupted was then never retried.
+            // Rethrowing lets WorkManager see the cancellation and reschedule.
+            throw e
         } catch (e: Exception) {
             finish(log, error = e.message ?: e::class.simpleName)
         }
