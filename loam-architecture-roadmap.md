@@ -423,9 +423,9 @@ Done:
 - ~~Recalibrate `DEFAULT_MIN_SCORE`~~ — 0.35 → 0.44, plus the "show weak matches" reach that makes raising it safe. The measurement said something more useful than a number; see below.
 - ~~Exclude patterns and chunk size~~ — the reindex flow they were waiting for turned out to be two flows, because only one of them invalidates anything.
 - ~~Share-sheet integration~~ — and the text-selection menu, which is the half that actually changes how the app is used.
+- ~~Home-screen search widget~~ — a shortcut whose whole value is the focused field, and which took a second pass to look like one.
 
 Remaining:
-- A home-screen search widget. The share sheet turned out to be the same need answered better, so this is now a convenience rather than the way in.
 - Battery/thermal testing under a full-vault first index, worth redoing now that it is not measuring two indexers at once — and now that a chunk-size change gives a repeatable way to trigger one on demand. The unexplained 46–52 ms/chunk below is the first thing to point it at.
 - **Exit criteria:** daily-driver comfortable — you reach for it instead of manual grep.
 
@@ -498,6 +498,24 @@ Worth naming for its shape rather than its content, because it is the same shape
 **The Search pane was untestable for a reason that had nothing to do with testing.** Ask got twelve tests easily and Search got none, and the difference was not effort: `AskPane` had been written as a separate composable taking `UiState`, while Search stayed inline in `LoamScreen`, holding a ViewModel and a `Context`. Reaching its branches meant standing up a database and an embedder to produce states that are three fields of a data class. Extracting it — no behaviour change, a pure function of `UiState` — turned ten tests into fabricated state and a callback each, running in 18 s with no vault present. Testability here was a structural property, not a test-writing problem, and the tell was that one pane was easy and its neighbour was impossible.
 
 Two things about the tests themselves. The `assertDoesNotExist` assertions — no Reindex button mid-index, no "No good matches" before a search, no stale counts under an error — are the ones that pass for free if a string is renamed, so each has a positive counterpart asserting the same text *is* present in the state where it belongs. That pairing is what makes an absence assertion mean anything, and it is cheap. And the query field cannot be found by its label or placeholder: both are sibling nodes rather than part of the editable field's semantics, so `performTextInput` finds nothing to type into. It is matched by `hasSetTextAction()`.
+
+#### The widget that worked and looked wrong
+
+A shortcut shaped like a search field. What it buys over the launcher icon is the focused field — Search open, keyboard already up — so the focus plumbing is the feature and the widget is only the trigger.
+
+It deliberately holds nothing. A note count is the obvious thing to put on a widget and is exactly the thing this one must not depend on: reading it means opening the encrypted index, which cannot be opened at all under `EVERY_TIME` protection. Holding nothing is also why `updatePeriodMillis` is zero — there is no state to go stale, so there is no reason to ever wake the app to redraw a constant. RemoteViews rather than Glance for the same kind of reason: a widget cannot host a real text field either way, and a shortcut does not justify a dependency that has to be accounted for at F-Droid review.
+
+Two things were checked rather than assumed, and a third should have been.
+
+**RemoteViews accepts only a fixed set of view types.** A layout it rejects does not fail the build or any Compose test — it renders as "Problem loading widget" on the home screen. A test applies the layout for real, which is the only cheap way to find that out.
+
+**`exported="false"` on a receiver the system broadcasts to looks wrong and is not.** `APPWIDGET_UPDATE` is a protected broadcast, so the system is the only possible sender and is exempt from the export check. Neither available probe could confirm this — an adb broadcast is refused as an unprivileged sender, and `bindAppWidgetIdIfAllowed` from an instrumented test returns false because binding belongs to launchers. It was settled by pulling the manifests of two working widgets installed on the same device, one RemoteViews and one Glance, and finding both declare exactly this. When you cannot exercise a configuration, the next best evidence is a shipping one.
+
+**The third:** the widget worked perfectly and looked wrong. It was as tall as whatever cell the launcher gave it — 1050 px in a 400 dp cell — because the pill was `match_parent`. Six tests passed on that version: it registered, it inflated, it kept its click target, it launched and focused the field. Every one of them checked that it *works*, and the defect was that a search widget shaped like a box does not read as a field. The user reported it in one glance.
+
+The fix is a transparent frame taking the cell with a fixed-height pill centred in it, and the test that now covers it measures the pill after laying it out in an oversized cell — the only thing that distinguishes the two layouts, since both inflate and both click through. Reverting the layout fails it at 1050 against 126 and nothing else.
+
+Worth stating plainly because it is a gap in this document's whole approach: **every technique here is for checking that something is correct, and none of them look at it.** A screenshot would have caught this instantly, and the one screenshot taken landed on a home-screen page that did not have the widget on it. For anything with a visual affordance, "the tests pass" and "it looks like what it is" are separate claims and only one of them is being made.
 
 #### The share sheet was the smaller half of "share-sheet integration"
 
@@ -577,6 +595,7 @@ Those tests are built from real `WorkInfo` values rather than an interface of ou
 - **Small-model hallucination survives RAG.** Grounding reduces it, doesn't eliminate it — the "sources used" panel is doing real work here, not decoration.
 - **SAF has no true background filesystem watch.** Periodic + manual reindex is the honest architecture, not a stopgap.
 - **First index of a large, long-lived vault will be slow and battery-heavy.** Needs a visible progress state; shouldn't run silently in the background on first launch.
+- **Nothing here looks at the app.** Every technique this document accumulates checks that something is correct — a measurement, an assertion, a mutation. None of them can see that a working widget is shaped like a box instead of a field, which is how that shipped past six passing tests and was caught by the user in one glance. Where something has a visual affordance, "the tests pass" and "it looks like what it is" are separate claims.
 - **A new field's absent state is a claim about history.** Twice now: a setting stored equal to its default froze that default forever, and an absent chunking fingerprint read as "unknown" would have rebuilt every existing index to reach the shape it already had. Both times the honest reading was available — nobody expressed a preference; chunking could only have been the default — and both times reading it as ignorance was a decision made by not making one.
 - **Testing states is not testing transitions.** Index protection was verified at each of its three levels and shipped; it destroyed a real index on the *change* between two of them, which no test touched. The same shape as the entry below — the thing exercised was adjacent to the thing that mattered.
 - **A test environment that can do more than production proves nothing about production.** Three separate bugs in Phase 2 came from this, each with a green suite and a broken app: an APK packaged differently from the test APK, a fixture the app could open by path where the real file needs a SAF grant, and a prompt short enough to stay under a batch limit the real one exceeds. When a test constructs its own inputs, it tends to construct ones it can satisfy. Ask what the real path crosses that the fixture does not.
