@@ -427,7 +427,6 @@ Done:
 - ~~Battery/thermal testing under a full-vault index~~ — a full rebuild costs ~1.7% of the battery. It also found a data-loss bug, which was worth more than the measurement.
 
 Remaining:
-- Profile `Chunker`. Battery testing localised the unexplained slowdown to it: 83.5 s and 98.0 s across two full rebuilds, against the 4.0 s on file, at ~213 ms/note. Reproducible, and the largest single cost in indexing after embedding.
 - **Exit criteria:** daily-driver comfortable — you reach for it instead of manual grep.
 
 Struck from this list: *paginated/streamed indexing so a large vault doesn't freeze the UI on first run*. Indexing runs in WorkManager with per-stage progress and never blocked the UI. The related worry about the vector index living in heap was also misplaced — measured at 8 MB for 5,297 chunks and 77 MB at 50k. The actual memory problem was somewhere else entirely; see below.
@@ -502,14 +501,14 @@ Two things about the tests themselves. The `assertDoesNotExist` assertions — n
 
 #### Battery testing found a data-loss bug, which was worth more than the measurement
 
-**The battery answer is boring, which is the good outcome.** A full rebuild of the 392-note vault costs about **1.7% of the battery**.
+**The battery answer is boring, which is the good outcome.** A full rebuild of the 392-note vault costs about **1.0% of the battery**. (First reported here as 1.7%, from a debug build — see below.)
 
 | | |
 | --- | --- |
-| Full rebuild | 5,297 chunks, 238.8 s, screen on, unplugged |
-| Charge consumed | 94 mAh (2,152 → 2,058 mAh) |
+| Full rebuild | 5,297 chunks, 139.3 s, screen on, unplugged, **release build** |
+| Charge consumed | 54 mAh (1,760 → 1,706 mAh) |
 | Idle screen-on baseline | ~240 mA |
-| Attributable to indexing | ~1,176 mA, so **~78 mAh** of a 4,492 mAh battery |
+| Attributable to indexing | ~1,156 mA, so **~45 mAh** of a 4,492 mAh battery |
 | Battery temperature | 31.2 → 33.3 °C |
 
 Incremental passes are ~2 s and round to nothing. Only a first index or a chunk-size change costs anything worth naming, and 1.7% is not a reason to constrain either.
@@ -527,7 +526,22 @@ Incremental passes are ~2 s and round to nothing. Only a first index or a chunk-
 | walk | 1.5 s | 1.6 s | — |
 | total | 151 s | 238.8 s | +87.8 s |
 
-Chunking is 91% of the gap and reproduced at 98.0 s on the second rebuild — 35% of the run in both, against 2.6% on file. Embedding is +7% and `embed/chunk` is 25.9 ms against 24.1, which is ordinary variance. So thermal, screen-on and foreground contention — the three things guessed when the discrepancy was first recorded — were all wrong, and the answer was a stage nobody suspected because it had been measured at 4 s and never re-checked. **A stage that was cheap once gets assumed cheap forever; nothing re-measures it until something else forces the question.** Neither run comes near 151 s, so that figure should not be trusted as a baseline again without a fresh measurement behind it.
+Chunking is 91% of the gap and reproduced at 98.0 s on the second rebuild — 35% of the run in both, against 2.6% on file.
+
+**All of which was the debug build, and none of it was real.** Left standing above because the correction is the more useful record. Instrumented tests and `adb install` of `app-debug.apk` had been the whole session's workflow, so every timing here came from `debuggable=true`. Installing the release APK and repeating the identical rebuild:
+
+| stage | on file | debug (cold) | debug (warm) | **release** |
+| --- | --- | --- | --- | --- |
+| chunk | 4.0 s | 83.5 s | 98.0 s | **2.7 s** |
+| embed | 128 s | 137.4 s | 166.3 s | **118.1 s** |
+| total | 151 s | 238.8 s | 287.0 s | **139.3 s** |
+| embed/chunk | 24.1 ms | 25.9 ms | 31.4 ms | **22.3 ms** |
+
+There is no regression. The 151 s baseline reproduces — release beats it. Chunking was never 35% of anything; it is 2% and always was. The tokenizer is the part `debuggable` punishes hardest: per-chunk tokenization measured **5.4–7.8 ms in debug against 0.2–0.3 ms in release**, about 25x, because it is allocation-heavy inner-loop Kotlin and that is exactly what the debug runtime declines to optimize.
+
+**This is the Phase 1 finding "Never benchmark a `debuggable` build", walked into with both eyes open.** It has been in this document since the sqlite-vec decision, where the same mistake made a 13.81 ms operation look like 533 ms. The tell was there in the data too: `Character.getType`, a table lookup, measured 402 ns per character, and no plausible story about chunking explains a slow lookup in the platform. Reading that as evidence about `Chunker` rather than about the runtime took a second wrong conclusion to notice.
+
+Two things were built on the false finding and then unbuilt. A `WordPieceTokenizer` optimization — code-point appends instead of substrings, a separate continuations map, a length cap on subword probes — was written, verified byte-identical against 2.6 MB of real notes, measured at 18% faster, and **reverted**: 18% of a cost that does not exist, bought with a duplicate 22k-entry vocabulary map in memory. And a `TokenizerStageTest` timing framework calls was deleted outright, since its entire output was absolute numbers from the only build it can ever run in. What survived is `ChunkerProfileTest`, which reports *ratios* — 3.3x the vault tokenized per index, 246 counter calls per note — and those hold across builds.
 
 **And the part that mattered.** A periodic rebuild wiped all 392 notes, embedded 85, and was stopped when the screen went off. The vault sat 78% unindexed, the UI reported "85 notes" as though that were the whole of it, and search silently missed most of the corpus. Three faults had to line up:
 
@@ -641,7 +655,7 @@ Those tests are built from real `WorkInfo` values rather than an interface of ou
 - **Testing states is not testing transitions.** Index protection was verified at each of its three levels and shipped; it destroyed a real index on the *change* between two of them, which no test touched. The same shape as the entry below — the thing exercised was adjacent to the thing that mattered.
 - **A test environment that can do more than production proves nothing about production.** Three separate bugs in Phase 2 came from this, each with a green suite and a broken app: an APK packaged differently from the test APK, a fixture the app could open by path where the real file needs a SAF grant, and a prompt short enough to stay under a batch limit the real one exceeds. When a test constructs its own inputs, it tends to construct ones it can satisfy. Ask what the real path crosses that the fixture does not.
 - **"Newer, more capable, more features" keeps measuring slower.** Q4_K_M lost to Q4_0; SVE2 lost to plain NEON+i8mm by 1.79x; ObjectBox, the most capable vector store, was ruled out on licensing. On-device, the sophisticated option is a hypothesis, not a default — and the wrong one produces correct output at half the speed, which no test catches.
-- **Recurring lesson, now five for five: a claim is only as good as your model of what produced it.** A debug build inflated cosine search 36x; characters stood in for tokens and hid 14% of the vault; a burst of three embeddings stood in for sustained load; two concurrent indexers stood in for one, inflating every indexing figure by 4x and inviting a thermal explanation for a contention problem; and a `.gitignore` comment stood in for the vault's actual contents, producing a confident and entirely wrong claim that the exit criteria were unmet. The last one is the sharpest, because it was written *into the section warning about this exact failure*. Documentation is a proxy too. Check the thing.
+- **Recurring lesson, now six for six: a claim is only as good as your model of what produced it.** A debug build inflated cosine search 36x — and then, three phases later, inflated chunking 40x and invented a regression that never existed, because instrumented tests only run against the debug variant and nobody thought about which build the numbers came from; characters stood in for tokens and hid 14% of the vault; a burst of three embeddings stood in for sustained load; two concurrent indexers stood in for one, inflating every indexing figure by 4x and inviting a thermal explanation for a contention problem; and a `.gitignore` comment stood in for the vault's actual contents, producing a confident and entirely wrong claim that the exit criteria were unmet. Two of these are the same mistake made twice, years of project-time apart, with the warning already written down — which says something uncomfortable about how much protection a written-down lesson actually offers. **The one habit that would have caught it: before believing any timing, say out loud which binary produced it.** Documentation is a proxy too. Check the thing.
 - **Model licensing shapes your F-Droid listing.** Decide the EmbeddingGemma/MiniLM (and any LLM model) question with the anti-feature consequences in mind, not after the fact.
 
 ## Prior art & references

@@ -54,7 +54,7 @@ Not one of them reaches the network.
 
 | | |
 | --- | --- |
-| Full index | 5,297 chunks in 239 s (26 ms/chunk embedding) — an earlier 151 s run has not reproduced; see the roadmap |
+| Full index | 5,297 chunks in 151 s (24.1 ms/chunk) |
 | Incremental reindex, no changes | ~2 s |
 | Warm query | 12–13 ms (10 ms embed + 2–3 ms scan) |
 | First query after launch | 13 ms (session pre-warmed at startup) |
