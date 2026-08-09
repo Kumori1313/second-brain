@@ -427,6 +427,8 @@ Done:
 - ~~Battery/thermal testing under a full-vault index~~ — a full rebuild costs ~1.7% of the battery. It also found a data-loss bug, which was worth more than the measurement.
 
 Remaining:
+- **Theming.** The app is hard light-only today: `MaterialTheme { }` with no scheme falls back to `lightColorScheme()` unconditionally, `Theme.Loam` inherits `android:Theme.Material.Light.NoActionBar`, and there is no `values-night`. So a phone in dark mode gets a white rectangle, preceded by a white launch flash before Compose composes. Follow the system, allow an explicit override, and offer dynamic color where the platform has it. Decisions below.
+- **Widget theming, independent of both.** The widget gets its own setting rather than inheriting: follow the system, follow the app, or a fixed light/dark. Decisions below.
 - **Exit criteria:** daily-driver comfortable — you reach for it instead of manual grep.
 
 Struck from this list: *paginated/streamed indexing so a large vault doesn't freeze the UI on first run*. Indexing runs in WorkManager with per-stage progress and never blocked the UI. The related worry about the vector index living in heap was also misplaced — measured at 8 MB for 5,297 chunks and 77 MB at 50k. The actual memory problem was somewhere else entirely; see below.
@@ -498,6 +500,32 @@ Worth naming for its shape rather than its content, because it is the same shape
 **The Search pane was untestable for a reason that had nothing to do with testing.** Ask got twelve tests easily and Search got none, and the difference was not effort: `AskPane` had been written as a separate composable taking `UiState`, while Search stayed inline in `LoamScreen`, holding a ViewModel and a `Context`. Reaching its branches meant standing up a database and an embedder to produce states that are three fields of a data class. Extracting it — no behaviour change, a pure function of `UiState` — turned ten tests into fabricated state and a callback each, running in 18 s with no vault present. Testability here was a structural property, not a test-writing problem, and the tell was that one pane was easy and its neighbour was impossible.
 
 Two things about the tests themselves. The `assertDoesNotExist` assertions — no Reindex button mid-index, no "No good matches" before a search, no stale counts under an error — are the ones that pass for free if a string is renamed, so each has a positive counterpart asserting the same text *is* present in the state where it belongs. That pairing is what makes an absence assertion mean anything, and it is cheap. And the query field cannot be found by its label or placeholder: both are sibling nodes rather than part of the editable field's semantics, so `performTextInput` finds nothing to type into. It is matched by `hasSetTextAction()`.
+
+#### Theming — decided before building, for once
+
+Recorded ahead of the work rather than after it, because three of these are the kind of thing that is expensive to discover halfway through.
+
+**It is not cosmetic, and it sits before the exit criterion rather than after it.** The criterion is *"you reach for it instead of manual grep"*, and a notes app that blazes white when you check something at 2 a.m. is one you do not reach for. It is not a Phase 4 concern either: shipping light-only to F-Droid is a quality gap, not a distribution one.
+
+**Scope is one item, not three.** Follow the system (light/dark schemes, `values-night`, and a DayNight XML parent so the launch window matches), an explicit System/Light/Dark override in Settings, and dynamic color with a static fallback. Doing only the first means touching the theme twice, and the override is nearly free once the schemes exist. The override belongs in `Settings` alongside `Tuning`, including the store-only-deviations rule — a theme left on "System" should not be a stored choice that a later default change cannot reach.
+
+**Material You is not a Google dependency, despite the branding.** `dynamicLightColorScheme` / `dynamicDarkColorScheme` read `android.R.color.system_accent1_*` from the platform: no Play Services, no GMS, nothing that principle #3 excludes. It needs an API 31 guard because `minSdk` is 26, so a static fallback palette is required rather than optional. Worth writing down because it looks like a Google feature and an F-Droid reviewer will ask.
+
+**The widget gets its own setting, and the mechanics are the reason.** A `RemoteViews` widget cannot read app state when the launcher draws it — whatever it shows was baked in at the last `updateAppWidget` call. Today it uses `?android:attr/colorBackground` and `?android:attr/textColorSecondary`, which resolve against the *launcher's* theme, so "follow the system" is what it already does and costs nothing. The other modes cost something specific:
+
+| mode | how | what it costs |
+| --- | --- | --- |
+| Follow system | theme attributes, as now | nothing — the host re-inflates on configuration change |
+| Follow app | explicit colours pushed on every app-theme change | the widget must be updated whenever the app's theme setting changes |
+| Fixed light / dark | explicit colours pushed once | a system theme change no longer repaints it, so nothing has to listen |
+
+The trap is the middle row combined with the first: once explicit colours are baked in, a system dark-mode switch will not repaint the widget by itself, so "follow system" has to keep using theme attributes rather than being reimplemented as "push the current system colours". Two small code paths, not one general one.
+
+This does not reintroduce what the widget was deliberately kept clear of. It holds nothing *from the index* — the reason being that reading the index can fail outright under `EVERY_TIME` protection. A theme preference has no such failure mode, and `updatePeriodMillis` can stay zero because the setting changes only when someone changes it.
+
+One deliberate limit: a single global widget setting rather than per-instance configuration. Per-widget themes need a configuration activity and a per-id store, which is a lot of machinery for a shortcut. Worth revisiting only if more than one is ever placed.
+
+**Done means screenshots in both themes.** This is the second visual feature, and the first one shipped working and wrong-looking past six passing tests — see below, and see the risks entry that came out of it. A green suite is not evidence about appearance.
 
 #### Battery testing found a data-loss bug, which was worth more than the measurement
 
