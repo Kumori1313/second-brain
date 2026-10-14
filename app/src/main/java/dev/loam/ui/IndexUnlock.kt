@@ -7,10 +7,12 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.height
 import androidx.compose.material3.Button
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.fragment.app.FragmentActivity
@@ -29,24 +31,35 @@ fun IndexLocked(
     error: String?,
     onUnlock: () -> Unit,
 ) {
-    Centered {
-        Column(horizontalAlignment = Alignment.CenterHorizontally) {
-            Text("Loam is locked", style = MaterialTheme.typography.headlineSmall)
-            Spacer(Modifier.height(8.dp))
-            Text(
-                "Your index is encrypted with a key that needs authentication.",
-                style = MaterialTheme.typography.bodyMedium,
-            )
-            if (error != null) {
+    // A Surface rather than a bare Centered: this screen is shown instead of the
+    // Scaffold that supplies the theme's text colour to everything else, so
+    // without one the text fell back to black and vanished in the dark theme.
+    Surface(color = MaterialTheme.colorScheme.background) {
+        Centered {
+            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                Text(
+                    "Loam is locked",
+                    style = MaterialTheme.typography.headlineSmall,
+                    textAlign = TextAlign.Center,
+                )
                 Spacer(Modifier.height(8.dp))
                 Text(
-                    error,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.error,
+                    "Your index is encrypted with a key that needs authentication.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    textAlign = TextAlign.Center,
                 )
+                if (error != null) {
+                    Spacer(Modifier.height(8.dp))
+                    Text(
+                        error,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.error,
+                        textAlign = TextAlign.Center,
+                    )
+                }
+                Spacer(Modifier.height(24.dp))
+                Button(onClick = onUnlock) { Text("Unlock") }
             }
-            Spacer(Modifier.height(24.dp))
-            Button(onClick = onUnlock) { Text("Unlock") }
         }
     }
 }
