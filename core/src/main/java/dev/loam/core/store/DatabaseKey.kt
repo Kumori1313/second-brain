@@ -124,14 +124,11 @@ object DatabaseKey {
             //     <- android.security.KeyStoreException: Key user not
             //        authenticated (internal Keystore code: -26 ...)
             //
-            // Matched on the Keymaster code rather than the message, which is
-            // not contractual. Missing this is expensive rather than cosmetic:
-            // the unwrap path reads an unreadable seal as a lost key and
-            // regenerates it, so an unauthenticated key would be mistaken for a
-            // destroyed one and the index thrown away.
-            if (cause is android.security.KeyStoreException &&
-                keystoreErrorCode(cause) == KM_ERROR_KEY_USER_NOT_AUTHENTICATED
-            ) {
+            // Missing this is expensive rather than cosmetic: the unwrap path
+            // reads an unreadable seal as a lost key and regenerates it, so an
+            // unauthenticated key would be mistaken for a destroyed one and the
+            // index thrown away.
+            if (cause is android.security.KeyStoreException && isUserNotAuthenticated(cause)) {
                 return true
             }
 
@@ -144,14 +141,30 @@ object DatabaseKey {
     /** -26, `KM_ERROR_KEY_USER_NOT_AUTHENTICATED` in the Keymaster HAL. */
     private const val KM_ERROR_KEY_USER_NOT_AUTHENTICATED = -26
 
-    private fun keystoreErrorCode(e: android.security.KeyStoreException): Int =
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            e.numericErrorCode
-        } else {
-            // Pre-33 has no accessor; the code is embedded in the message.
-            Regex("internal Keystore code: (-?\\d+)").find(e.message.orEmpty())
-                ?.groupValues?.get(1)?.toIntOrNull() ?: 0
+    /**
+     * Both spellings are checked, because each alone failed on a real device.
+     *
+     * `getNumericErrorCode()` (API 33+) does not return the Keymaster code: it
+     * returns a *public* code the platform maps it to, so comparing it with -26
+     * can never match — which is exactly how this shipped broken on Android 17,
+     * read "authenticate first" as "key destroyed", and regenerated the key
+     * under an index it could no longer open. `getErrorCode()` has the raw
+     * value but is `@hide`. The raw value is also in the message, which is how
+     * pre-33 devices are handled.
+     */
+    private fun isUserNotAuthenticated(e: android.security.KeyStoreException): Boolean {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            e.numericErrorCode == android.security.KeyStoreException.ERROR_USER_AUTHENTICATION_REQUIRED
+        ) {
+            return true
         }
+        return internalKeystoreCode(e.message) == KM_ERROR_KEY_USER_NOT_AUTHENTICATED
+    }
+
+    /** The `internal Keystore code: N` embedded in a KeyStoreException message. */
+    internal fun internalKeystoreCode(message: String?): Int? =
+        Regex("internal Keystore code: (-?\\d+)").find(message.orEmpty())
+            ?.groupValues?.get(1)?.toIntOrNull()
 
     fun protection(context: Context): KeyProtection =
         prefs(context).getString(PREF_PROTECTION, null)
@@ -170,7 +183,18 @@ object DatabaseKey {
     fun isLocked(context: Context): Boolean {
         if (cached != null) return false
         if (protection(context) == KeyProtection.OFF) return false
-        return runCatching { getOrCreate(context) }.isFailure
+        val sealed = prefs(context).getString(PREF_SEALED, null) ?: return false
+        return try {
+            cached = unseal(context, sealed)
+            false
+        } catch (e: Exception) {
+            // Only ever a question. An unreadable seal that is not an
+            // authentication problem is left for [getOrCreate] to handle, with a
+            // caller that can drop the database. Handling it here regenerated
+            // the key with nobody dropping the index, and the app then crashed
+            // on every launch with "file is not a database".
+            isAuthRequired(e)
+        }
     }
 
     /**

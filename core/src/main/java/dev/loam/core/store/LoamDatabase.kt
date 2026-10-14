@@ -1,9 +1,11 @@
 package dev.loam.core.store
 
 import android.content.Context
+import android.util.Log
 import androidx.room.Database
 import androidx.room.Room
 import androidx.room.RoomDatabase
+import net.zetetic.database.sqlcipher.SQLiteNotADatabaseException
 import net.zetetic.database.sqlcipher.SupportOpenHelperFactory
 
 /**
@@ -49,7 +51,29 @@ abstract class LoamDatabase : RoomDatabase() {
                 context.deleteDatabase(NAME)
             }
 
-            return Room.databaseBuilder(context, LoamDatabase::class.java, NAME)
+            val db = create(context, passphrase)
+            return try {
+                // Opened now rather than on first query, so an unreadable file
+                // is met here, where it can be dealt with, instead of crashing
+                // whichever screen happens to query first.
+                db.openHelper.writableDatabase
+                db
+            } catch (e: SQLiteNotADatabaseException) {
+                // The passphrase unsealed fine but does not open the file, so
+                // the file belongs to a key that no longer exists. Seen after a
+                // bug regenerated the key without dropping the index; without
+                // this the app crashed on every launch, and nothing the user
+                // could do from inside it would help. The index is derived, so
+                // dropping it costs a reindex and nothing else.
+                Log.w("LoamDatabase", "index unreadable with the current key — dropping it", e)
+                runCatching { db.close() }
+                context.deleteDatabase(NAME)
+                create(context, passphrase)
+            }
+        }
+
+        private fun create(context: Context, passphrase: ByteArray): LoamDatabase =
+            Room.databaseBuilder(context, LoamDatabase::class.java, NAME)
                 .openHelperFactory(SupportOpenHelperFactory(passphrase))
                 // The index is derived data — every chunk can be rebuilt from
                 // the user's own .md files, which are the actual source of
@@ -58,6 +82,5 @@ abstract class LoamDatabase : RoomDatabase() {
                 // a cache.
                 .fallbackToDestructiveMigration(dropAllTables = true)
                 .build()
-        }
     }
 }
