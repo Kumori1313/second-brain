@@ -43,3 +43,8 @@ target/
 
 # Generated locally by Gradle (daemon JVM criteria); machine-specific
 gradle/gradle-daemon-jvm.properties
+
+# Signing keys - never commit
+*.jks
+*.keystore
+*.p12

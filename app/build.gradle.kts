@@ -1,3 +1,5 @@
+import java.util.Properties
+
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.compose)
@@ -18,10 +20,62 @@ android {
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
+    // The release key lives outside the repo. Each value is read from
+    // local.properties (gitignored) as `loam.<name>`, else from the matching
+    // LOAM_<NAME> environment variable:
+    //   loam.keystore / LOAM_KEYSTORE                    path to the .jks
+    //   loam.keystorePassword / LOAM_KEYSTORE_PASSWORD
+    //   loam.keyAlias / LOAM_KEY_ALIAS
+    //   loam.keyPassword / LOAM_KEY_PASSWORD             defaults to the store password
+    //
+    // Prefer local.properties. A running Gradle daemon can keep serving the
+    // environment it started with, so changing LOAM_* between builds may be
+    // ignored until `./gradlew --stop`.
+    //
+    // Losing this key means no later release can update an existing install,
+    // so it is backed up outside this machine, and never committed.
+    val signingProps = Properties().apply {
+        rootProject.file("local.properties").takeIf { it.isFile }?.inputStream()?.use { load(it) }
+    }
+    fun signingValue(prop: String, env: String): String? =
+        signingProps.getProperty("loam.$prop") ?: System.getenv(env)
+
+    val releaseKeystore = signingValue("keystore", "LOAM_KEYSTORE")?.let { rootProject.file(it) }
+    val releaseKeystorePassword = signingValue("keystorePassword", "LOAM_KEYSTORE_PASSWORD")
+    val releaseKeyAlias = signingValue("keyAlias", "LOAM_KEY_ALIAS")
+    val releaseKeyPassword = signingValue("keyPassword", "LOAM_KEY_PASSWORD") ?: releaseKeystorePassword
+    val hasReleaseKey = releaseKeystore?.isFile == true &&
+        releaseKeystorePassword != null && releaseKeyAlias != null
+
+    signingConfigs {
+        if (hasReleaseKey) {
+            create("release") {
+                storeFile = releaseKeystore
+                storePassword = releaseKeystorePassword
+                keyAlias = releaseKeyAlias
+                keyPassword = releaseKeyPassword
+            }
+        }
+    }
+
     buildTypes {
         release {
             isMinifyEnabled = false
-            signingConfig = signingConfigs.getByName("debug")
+            // Falls back to the debug key so a checkout without the release
+            // key still builds — but that APK cannot update, or be updated by,
+            // a release-signed one (INSTALL_FAILED_UPDATE_INCOMPATIBLE), so it
+            // is never a release. The warning below is how that is kept from
+            // being forgotten.
+            signingConfig = if (hasReleaseKey) {
+                signingConfigs.getByName("release")
+            } else {
+                logger.warn(
+                    "WARNING: no release signing key configured; signing the release " +
+                        "build with the DEBUG key. Set loam.keystore, loam.keystorePassword " +
+                        "and loam.keyAlias in local.properties (or LOAM_* env vars).",
+                )
+                signingConfigs.getByName("debug")
+            }
         }
     }
 
