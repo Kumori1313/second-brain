@@ -40,3 +40,6 @@ target/
 .idea/
 *.iml
 .DS_Store
+
+# Generated locally by Gradle (daemon JVM criteria); machine-specific
+gradle/gradle-daemon-jvm.properties
