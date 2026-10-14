@@ -21,6 +21,10 @@ onnxruntime = "1.28.0"
 coroutines = "1.10.2"
 
 biometric = "1.4.0-alpha04"
+# biometric drags in fragment 1.2.5, which predates the Activity Result API's
+# request codes and crashes any registerForActivityResult launch from a
+# FragmentActivity ("Can only use lower 16 bits for requestCode").
+fragment = "1.8.9"
 junit = "4.13.2"
 androidxTestJunit = "1.3.0"
 androidxTestRunner = "1.7.0"
@@ -29,6 +33,7 @@ kotlinxCoroutinesTest = "1.10.2"
 
 [libraries]
 androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
+androidx-fragment = { group = "androidx.fragment", name = "fragment", version.ref = "fragment" }
 androidx-biometric = { group = "androidx.biometric", name = "biometric", version.ref = "biometric" }
 androidx-lifecycle-process = { group = "androidx.lifecycle", name = "lifecycle-process", version.ref = "lifecycle" }
 androidx-lifecycle-runtime-ktx = { group = "androidx.lifecycle", name = "lifecycle-runtime-ktx", version.ref = "lifecycle" }
