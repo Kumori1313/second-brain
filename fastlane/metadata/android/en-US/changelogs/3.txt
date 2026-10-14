@@ -1,0 +1,2 @@
+Fixes a crash loop after enabling "every launch" index protection, and an unreadable lock screen in the dark theme.
+Updates 1.0.1 in place and keeps your index; an index already stuck in the crash loop is dropped and must be reindexed.

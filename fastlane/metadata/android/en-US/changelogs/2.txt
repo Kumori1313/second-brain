@@ -1,0 +1,2 @@
+Fixes a crash when choosing the vault folder or the model file.
+First build signed with a release key; copies installed from the earlier debug-signed build must be uninstalled first.

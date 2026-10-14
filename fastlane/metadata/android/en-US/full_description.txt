@@ -1,0 +1,24 @@
+Loam is a semantic search and question-answering layer over the Markdown notes you already have, such as an Obsidian vault. It runs entirely on your phone.
+
+Ask "did I ever write about setting up a virtual machine" and get the right note back, even if it never uses those words. Then ask a question and get an answer written from your notes by a language model running on the device, with every source listed before the answer starts.
+
+<b>Your notes stay yours</b>
+Loam reads your .md files in place through Android's folder picker. It is not a note editor, it does not copy your notes into a new format, and tapping a result opens the real file in the app you already use. Uninstall Loam and you have lost nothing.
+
+<b>Private by construction</b>
+- The app has no network permission at all. This is enforced by Android, not a promise.
+- The search index, which is derived from your notes, is encrypted on the device, with optional protection by device unlock or on every launch.
+- No analytics, no telemetry, no ads.
+
+<b>What it does</b>
+- Semantic search across your whole vault, with source file, heading and similarity score shown for every result.
+- Honest empty results: when nothing matches well, it says so instead of showing noise.
+- Ask: answers grounded in your notes by a local language model. You supply the model file yourself (a GGUF such as Qwen2.5-1.5B-Instruct), so the app never needs to download anything.
+- Search from the share sheet and the text-selection menu in any app, and from a home-screen widget.
+- Periodic and manual reindexing, with exclude patterns and adjustable chunk size.
+- Light, dark and Material You themes.
+
+<b>Requirements</b>
+Android 8.0 or newer on a 64-bit ARM (arm64-v8a) device. Search works as soon as your vault is indexed; the first index of a few hundred notes takes a few minutes. Ask needs a model file on the phone and a reasonably recent device, since the model runs on the CPU.
+
+Loam is free software under the MIT license.
