@@ -13,12 +13,13 @@
   Verify against the built APK rather than trusting this file:
     aapt2 dump permissions app/build/outputs/apk/release/app-release.apk
 
-  The only entry should be DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION, a
-  self-scoped signature permission AndroidX injects for local broadcasts. It
-  grants nothing outward.
+  The only INTERNET-adjacent thing to look for is its absence. The expected
+  list (see the README) is the biometric pair, the WorkManager trio, and
+  DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION, a self-scoped signature permission
+  AndroidX injects for local broadcasts. None of them reaches the network.
 
-  INTERNET enters in Phase 2, scoped to fetching an LLM model on explicit user
-  action — and that is the only legitimate use.
+  INTERNET is never added, not even in Phase 2: the LLM is sideloaded through
+  the same file picker as the vault, so there is no download to permit.
 -->
 <manifest
     xmlns:android="http://schemas.android.com/apk/res/android"

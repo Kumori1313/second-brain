@@ -41,7 +41,7 @@ models/  Embedding weights (gitignored; see Building)
 
 These act as acceptance criteria for any work in this repo. Flag violations rather than silently adding them.
 
-1. **Zero network permission — permanently, with no exception.** The APK holds no `INTERNET` permission at all. This supersedes the earlier idea of a one-time in-app model download: the embedder is bundled in the APK and the LLM is sideloaded through the SAF picker. Don't add download code. WorkManager's `ACCESS_NETWORK_STATE` is stripped via `tools:node="remove"`; keep it stripped. The README lists the exact expected `aapt2 dump permissions` output — if you add a dependency, re-check it against the built APK. (The manifest header comment still says INTERNET "enters in Phase 2"; that is stale — the roadmap and README are correct.)
+1. **Zero network permission — permanently, with no exception.** The APK holds no `INTERNET` permission at all. This supersedes the earlier idea of a one-time in-app model download: the embedder is bundled in the APK and the LLM is sideloaded through the SAF picker. Don't add download code. WorkManager's `ACCESS_NETWORK_STATE` is stripped via `tools:node="remove"`; keep it stripped. The README lists the exact expected `aapt2 dump permissions` output — if you add a dependency, re-check it against the built APK.
 2. **No proprietary storage format.** Notes remain plain `.md` files wherever the user keeps them.
 3. **No Google dependencies.** No Play Services, Firebase, or GMS-only APIs. Inference uses ONNX Runtime (Microsoft's) rather than LiteRT for this reason.
 4. **Auditable, not a black box.** Every result shows source file, heading breadcrumb and score; every RAG answer lists its sources (shown before generation starts). No telemetry.
