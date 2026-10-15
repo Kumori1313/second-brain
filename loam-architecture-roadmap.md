@@ -428,6 +428,7 @@ Done:
 - ~~App theming~~ — System / Light / Dark plus Material You. The plan below survived contact, with one correction: the launch window needed code, not just a resource qualifier.
 - ~~Fresh-build install on the development phone~~ — three failures in a row before the app opened a folder, the last of them a crash on the first tap. See below.
 - ~~Index protection crash loop~~ — the detection fix described above was wrong on API 33+, and a status question regenerated the key. Fixed with a self-heal for devices already stuck; the lock screen was also unreadable in dark mode.
+- ~~Background reindexing as a setting~~ — it could only stop as a side effect of the strictest protection level. Now a switch of its own, and the schedule is decided in one place; see below.
 
 Remaining:
 - **Widget theming, independent of both.** The widget gets its own setting rather than inheriting: follow the system, follow the app, or a fixed light/dark. Decisions below.
@@ -483,6 +484,26 @@ Turning on "every launch" protection and reopening the app put it into a crash l
 **Not established:** why this passed verification the first time. The `numericErrorCode` comparison is in the very commit the previous section describes as verified (`754b9f7`), on what the README gives as the same device and OS. The cancel-the-prompt and change-level paths were exercised; a cold start under the per-use level with a locked key evidently was not, or not in a way that reached this branch. That is a guess about coverage, not a finding.
 
 **What is still not covered.** `DatabaseKeyTest` pins only the pure part — parsing the code out of the message, using the exact string from the failing device. `isAuthRequired` itself needs a real `KeyStoreException`, which cannot be constructed off-device, and nothing instruments a cold start under the per-use level. The thing that broke is still unguarded by a test.
+
+#### Background reindexing became a setting of its own
+
+Periodic reindexing could stop in exactly one way: by choosing the strictest index-protection level, which cancels the schedule because an unattended pass has nobody to authenticate. That tied a CPU and battery decision to a security one. A background pass is real work whatever the protection level, so someone who finds it slows their phone had no way to stop it short of weakening or strengthening the wrong thing.
+
+**The setting.** A "Reindex in the background" switch under Vault. It defaults to on and only *off* is stored, the same rule as every other setting here, which also leaves every existing install exactly as it was: none of them has the key, so all of them read "on", which is what they were already doing. Turning it off also cancels a pass already running, which is safe now that an interrupted pass cannot clear the index.
+
+**Protection can override the switch but not replace it.** Under the strictest level the switch is disabled, says why, and keeps the user's choice, so relaxing protection later resumes whatever they had chosen. "Reset to measured defaults" deliberately leaves it alone: the switch is a preference, not a measured constant, and a reset button that quietly turned a battery-saving choice back on would be the wrong surprise.
+
+**One decision, in one place.** Whether the schedule should exist is `PeriodicIndexing.shouldRun(enabled, protection, hasVault)`, and startup, a protection change, picking a vault and the switch all go through a single `applyPeriodicSchedule()`. Before, three call sites each knew part of the answer, and one of them was wrong: picking a vault scheduled the pass unconditionally, so under the strictest level it would have created a job that could not decrypt the index, and the startup check only ever returned early without cancelling it. That was found by reading the code and has not been observed on a device, so it is recorded as a defect that existed, not one anyone hit. The twelve combinations of the three inputs are unit-tested, including the case the request was about: turning it off wins at every protection level.
+
+**Enabling it starts a pass immediately.** WorkManager runs a new periodic job once as soon as it is scheduled. On this vault, unchanged, that was about two seconds in the job history; after a long gap with many edits it would be a real pass. Not changed, because it is how scheduling already behaved on first launch.
+
+**Verified on the Pixel 8a against WorkManager's own job list**, not the UI: with the switch on there is a registered `IndexWorker` job due in 5 h 59 m 57 s, the six-hour period; with it off none is left.
+
+**The first check was wrong, and its failure mode is the one to remember.** The grep for the job matched nothing in *either* state, including with the switch on. A probe that cannot return "yes" cannot be trusted to return "no", and reading its silence as "cancelled" would have confirmed the feature working for the wrong reason. The job listing is `JOB androidx.work.systemjobscheduler:u0a384/N …`, not the shape that was searched for. The probe was only believed once it showed a job in the on state.
+
+**Instrumented tests cannot be run on the release-signed phone.** They install a debug build signed with a different key, which forces an uninstall of the release build and wipes the index. That is why this was verified by hand over wireless debugging instead of by `connectedAndroidTest`. An emulator would do for them, and one exists (`Medium_Phone_API_37.0`), but it was not used here and the instrumented suite was not run against it for this change.
+
+**Not covered:** the disabled state under the strictest level was not exercised on the device, since reaching it means changing protection and passing fingerprint prompts, so it rests on the unit test and the code. The view-model wiring around `applyPeriodicSchedule()` has no test of its own; only the pure decision does.
 
 #### Phase 3 findings
 
