@@ -162,7 +162,10 @@ class IndexWorker(
             )
         }
 
-        /** Used when key protection makes unattended indexing impossible. */
+        /**
+         * Used when the user turns the background pass off, or when key
+         * protection makes unattended indexing impossible.
+         */
         fun cancelPeriodic(context: Context) {
             WorkManager.getInstance(context).cancelUniqueWork(UNIQUE_PERIODIC)
         }

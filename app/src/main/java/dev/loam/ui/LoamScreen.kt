@@ -148,6 +148,8 @@ fun LoamScreen(viewModel: SearchViewModel) {
                     onPickVault = { pickVault.launch(null) },
                     onPickModel = onPickModel,
                     onReindex = viewModel::reindex,
+                    periodicReindex = state.periodicReindex,
+                    onPeriodicReindexChange = viewModel::onPeriodicReindexChange,
                     keyProtection = state.keyProtection,
                     onKeyProtectionChange = { level ->
                         val activity = context as? androidx.fragment.app.FragmentActivity

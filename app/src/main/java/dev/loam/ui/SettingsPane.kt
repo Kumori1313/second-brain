@@ -72,6 +72,8 @@ fun SettingsPane(
     onReindex: () -> Unit,
     keyProtection: KeyProtection,
     onKeyProtectionChange: (KeyProtection) -> Unit,
+    periodicReindex: Boolean,
+    onPeriodicReindexChange: (Boolean) -> Unit,
 ) {
     Column(
         modifier = Modifier
@@ -90,6 +92,45 @@ fun SettingsPane(
             TextButton(onClick = onReindex, enabled = !state.indexing) {
                 Text(if (state.indexing) "Indexing…" else "Reindex now")
             }
+        }
+
+        // Independent of index protection. Reindexing is real CPU and battery
+        // work, so it is the user's to switch off; protection can only override
+        // the switch (an unattended pass cannot authenticate), never replace it.
+        val allowed = keyProtection.allowsBackgroundIndexing
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(top = 4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween,
+        ) {
+            Column(Modifier.weight(1f)) {
+                Text("Reindex in the background", style = MaterialTheme.typography.bodyLarge)
+                Text(
+                    when {
+                        !allowed ->
+                            "Unavailable while index protection asks every time Loam " +
+                                "opens: a background pass has nobody to ask. Your choice " +
+                                "here is kept for when that changes."
+                        periodicReindex ->
+                            "Checks for changed notes about every six hours, unless " +
+                                "the battery is low. Turn off if it slows your phone; " +
+                                "Reindex now still works."
+                        else ->
+                            "Off. The index only updates when you tap Reindex now, " +
+                                "so recent edits will not show up in search until you do."
+                    },
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            Spacer(Modifier.width(12.dp))
+            Switch(
+                checked = periodicReindex && allowed,
+                onCheckedChange = onPeriodicReindexChange,
+                enabled = allowed,
+            )
         }
 
         HorizontalDivider(Modifier.padding(vertical = 8.dp))

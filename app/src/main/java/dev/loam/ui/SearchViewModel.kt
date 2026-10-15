@@ -12,6 +12,7 @@ import dev.loam.core.domain.Appearance
 import dev.loam.core.domain.AskQuestion
 import dev.loam.core.domain.SearchNotes
 import dev.loam.core.domain.IndexingRules
+import dev.loam.core.domain.PeriodicIndexing
 import dev.loam.core.domain.Tuning
 import dev.loam.core.store.KeyProtection
 import dev.loam.work.IndexRunLog
@@ -52,6 +53,8 @@ class SearchViewModel(app: Application) : AndroidViewModel(app) {
         /** Last path segment of the vault URI — enough to recognise it. */
         val vaultName: String? = null,
         val keyProtection: KeyProtection = KeyProtection.OFF,
+        /** The user's wish, which protection can still override; see [PeriodicIndexing]. */
+        val periodicReindex: Boolean = true,
         /**
          * The last completed index pass, background or manual, possibly from a
          * previous launch. Rendered as the dated fact it is, not as news.
@@ -129,6 +132,7 @@ class SearchViewModel(app: Application) : AndroidViewModel(app) {
             rules = loam.settings.indexing,
             vaultName = loam.vaultLocation.treeUri?.lastPathSegment,
             keyProtection = loam.settings.keyProtection,
+            periodicReindex = loam.settings.periodicReindex,
         )
     )
     val state: StateFlow<UiState> = _state.asStateFlow()
@@ -267,11 +271,20 @@ class SearchViewModel(app: Application) : AndroidViewModel(app) {
             error = failure?.let { "Protection unchanged: ${it.message}" },
         )
 
-        if (stored.allowsBackgroundIndexing) {
-            IndexWorker.schedulePeriodic(getApplication())
-        } else {
-            IndexWorker.cancelPeriodic(getApplication())
-        }
+        applyPeriodicSchedule()
+    }
+
+    /**
+     * The user's switch for the background pass.
+     *
+     * Independent of index protection: it is a CPU and battery choice before it
+     * is a security one. Turning it off also cancels a pass already running,
+     * which is safe because an interrupted pass never clears the index.
+     */
+    fun onPeriodicReindexChange(enabled: Boolean) {
+        loam.settings.periodicReindex = enabled
+        _state.value = _state.value.copy(periodicReindex = loam.settings.periodicReindex)
+        applyPeriodicSchedule()
     }
 
     fun onModelPicked(uri: Uri) {
@@ -308,12 +321,22 @@ class SearchViewModel(app: Application) : AndroidViewModel(app) {
      * Idempotent by way of KEEP, which is load-bearing here; see
      * [IndexWorker.schedulePeriodic].
      */
-    private fun ensurePeriodicIndexing() {
-        if (loam.vaultLocation.treeUri == null) return
-        // A key that needs authentication per use cannot be reached by an
-        // unattended worker, so there is nothing to schedule.
-        if (!loam.settings.keyProtection.allowsBackgroundIndexing) return
-        IndexWorker.schedulePeriodic(getApplication())
+    private fun ensurePeriodicIndexing() = applyPeriodicSchedule()
+
+    /**
+     * Makes WorkManager match what [PeriodicIndexing.shouldRun] says, in either
+     * direction. Every place that can change the answer calls this rather than
+     * scheduling or cancelling on its own, since doing it piecemeal is how a
+     * vault pick scheduled a pass that strict protection could not decrypt.
+     */
+    private fun applyPeriodicSchedule() {
+        val run = PeriodicIndexing.shouldRun(
+            enabled = loam.settings.periodicReindex,
+            protection = loam.settings.keyProtection,
+            hasVault = loam.vaultLocation.treeUri != null,
+        )
+        if (run) IndexWorker.schedulePeriodic(getApplication())
+        else IndexWorker.cancelPeriodic(getApplication())
     }
 
     /**
@@ -411,7 +434,7 @@ class SearchViewModel(app: Application) : AndroidViewModel(app) {
             vaultName = uri.lastPathSegment,
         )
         reindex()
-        IndexWorker.schedulePeriodic(getApplication())
+        applyPeriodicSchedule()
     }
 
     fun reindex() {

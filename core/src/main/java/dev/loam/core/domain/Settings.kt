@@ -223,6 +223,24 @@ class Settings(private val context: Context) {
             }.apply()
         }
 
+    /**
+     * Whether the six-hourly background pass is wanted. On unless turned off.
+     *
+     * Same store-only-deviations rule as [tuning], and here it also keeps every
+     * existing install exactly as it was: none of them has this key, so all of
+     * them read "on", which is what they were already doing.
+     *
+     * Whether it actually runs also depends on key protection and on there
+     * being a vault; see [PeriodicIndexing.shouldRun].
+     */
+    var periodicReindex: Boolean
+        get() = prefs.getBoolean(KEY_PERIODIC_REINDEX, true)
+        set(value) {
+            prefs.edit().apply {
+                if (value) remove(KEY_PERIODIC_REINDEX) else putBoolean(KEY_PERIODIC_REINDEX, false)
+            }.apply()
+        }
+
     fun reset() {
         prefs.edit().clear().apply()
     }
@@ -237,5 +255,6 @@ class Settings(private val context: Context) {
         const val KEY_INDEXED_CHUNKING = "indexed_chunking"
         const val KEY_THEME_MODE = "theme_mode"
         const val KEY_DYNAMIC_COLOR = "dynamic_color"
+        const val KEY_PERIODIC_REINDEX = "periodic_reindex"
     }
 }
