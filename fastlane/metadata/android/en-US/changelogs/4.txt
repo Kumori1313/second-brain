@@ -1,0 +1,2 @@
+New "Reindex in the background" switch in Settings, so you can stop periodic reindexing on its own, independent of index protection.
+Fixes picking a vault under "Ask every time" protection scheduling a background pass that could not read the index.
