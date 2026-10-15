@@ -1,0 +1,39 @@
+Categories:
+  - Note
+License: MIT
+SourceCode: https://github.com/Kumori1313/second-brain
+IssueTracker: https://github.com/Kumori1313/second-brain/issues
+Changelog: https://github.com/Kumori1313/second-brain/releases
+
+AutoName: Loam
+
+RepoType: git
+Repo: https://github.com/Kumori1313/second-brain.git
+
+# Publish the APK signed with the developer's key, if the build matches the
+# release on GitHub byte for byte (see the open questions in the MR).
+Binaries: https://github.com/Kumori1313/second-brain/releases/download/v%v/loam-%v.apk
+AllowedAPKSigningKeys: 0739abc6c94402f092da5cfbe5fd4d815885ba315eea7ce921b0537c5abbe729
+
+Builds:
+  - versionName: 1.0.2
+    versionCode: 3
+    commit: dc57349d80e3bb02cdb307c23875e649466151d7
+    subdir: app
+    submodules: true
+    ndk: 27.3.13750724
+    gradle:
+      - yes
+    # The embedding model is bundled into the APK but not committed. Pinned to a
+    # Hugging Face revision and verified by checksum.
+    prebuild:
+      - mkdir -p ../models/all-MiniLM-L6-v2
+      - curl -fsSL -o ../models/all-MiniLM-L6-v2/model_qint8_arm64.onnx https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2/resolve/1110a243fdf4706b3f48f1d95db1a4f5529b4d41/onnx/model_qint8_arm64.onnx
+      - curl -fsSL -o ../models/all-MiniLM-L6-v2/vocab.txt https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2/resolve/1110a243fdf4706b3f48f1d95db1a4f5529b4d41/vocab.txt
+      - echo "4278337fd0ff3c68bfb6291042cad8ab363e1d9fbc43dcb499fe91c871902474  ../models/all-MiniLM-L6-v2/model_qint8_arm64.onnx" | sha256sum -c
+      - echo "07eced375cec144d27c900241f3e339478dec958f92fddbc551f295c992038a3  ../models/all-MiniLM-L6-v2/vocab.txt" | sha256sum -c
+
+AutoUpdateMode: Version
+UpdateCheckMode: Tags ^v[0-9.]+$
+CurrentVersion: 1.0.2
+CurrentVersionCode: 3
