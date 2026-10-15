@@ -16,9 +16,9 @@ Binaries: https://github.com/Kumori1313/second-brain/releases/download/v%v/loam-
 AllowedAPKSigningKeys: 0739abc6c94402f092da5cfbe5fd4d815885ba315eea7ce921b0537c5abbe729
 
 Builds:
-  - versionName: 1.0.2
-    versionCode: 3
-    commit: dc57349d80e3bb02cdb307c23875e649466151d7
+  - versionName: 1.0.3
+    versionCode: 4
+    commit: 2d85d4465aa249283dac2ace38f855905032624e
     subdir: app
     submodules: true
     ndk: 27.3.13750724
@@ -35,5 +35,5 @@ Builds:
 
 AutoUpdateMode: Version
 UpdateCheckMode: Tags ^v[0-9.]+$
-CurrentVersion: 1.0.2
-CurrentVersionCode: 3
+CurrentVersion: 1.0.3
+CurrentVersionCode: 4
